@@ -1,8 +1,9 @@
-import _ from 'lodash';
+import 'whatwg-fetch';
+
 import { Link } from 'react-router-dom';
 import PropTypes from 'prop-types';
 import React from 'react';
-import 'whatwg-fetch';
+import _ from 'lodash';
 
 const checkFetchOk = resp => {
   if (resp.ok) {
@@ -54,6 +55,7 @@ export const apiErrorPropType = PropTypes.shape({
 const ApiHelpers = (pathPrefix, defaultMetricsWindow = '1m') => {
   let metricsWindow = defaultMetricsWindow;
   const podsPath = `/api/pods`;
+  const servicesPath = `/api/services`;
 
   const validMetricsWindows = {
     "10s": "10 minutes",
@@ -88,6 +90,13 @@ const ApiHelpers = (pathPrefix, defaultMetricsWindow = '1m') => {
     return apiFetch(podsPath);
   };
 
+  const fetchServices = namespace => {
+    if (!_.isNil(namespace)) {
+      return apiFetch(servicesPath + "?namespace=" + namespace);
+    }
+    return apiFetch(servicesPath);
+  };
+
   const getMetricsWindow = () => metricsWindow;
   const getMetricsWindowDisplayText = () => validMetricsWindows[metricsWindow];
 
@@ -97,6 +106,7 @@ const ApiHelpers = (pathPrefix, defaultMetricsWindow = '1m') => {
   };
 
   const urlsForResource = (type, namespace) => {
+    // Traffic Performance Summary. This retrieves stats for the given resource.
     let baseUrl = '/api/tps-reports?resource_type=' + type;
     return !namespace ? baseUrl + '&all_namespaces=true' : baseUrl + '&namespace=' + namespace;
   };
@@ -131,11 +141,7 @@ const ApiHelpers = (pathPrefix, defaultMetricsWindow = '1m') => {
     }
 
     render() {
-      let prefix = pathPrefix;
-      if (!_.isEmpty(this.props.deployment)) {
-        prefix = prefix.replace("/web:", "/"+this.props.deployment+":");
-      }
-      let url = `${prefix}${this.props.to}`;
+      let url = prefixLink(this.props.to, this.props.deployment);
 
       return (
         <Link
@@ -147,18 +153,60 @@ const ApiHelpers = (pathPrefix, defaultMetricsWindow = '1m') => {
     }
   }
 
+  const prefixLink = (to, controllerDeployment) => {
+    let prefix = pathPrefix;
+    if (!_.isEmpty(controllerDeployment)) { // add field for grafana deployment
+      prefix = prefix.replace("/linkerd-web:", "/" + controllerDeployment + ":");
+    }
+
+    return `${prefix}${to}`;
+  };
+
+  const generateResourceURL = r => {
+    if (r.type === "namespace") {
+      return "/namespaces/" + (r.namespace || r.name);
+    }
+
+    return "/namespaces/" + r.namespace + "/" + r.type + "s/" + r.name;
+  };
+
+  // a prefixed link to a Resource Detail page
+  const ResourceLink = ({resource, linkText}) => {
+    return (
+      <PrefixedLink to={generateResourceURL(resource)}>
+        { linkText || resource.type + "/" + resource.name}
+      </PrefixedLink>
+    );
+  };
+  ResourceLink.propTypes = {
+    linkText: PropTypes.string,
+    resource: PropTypes.shape({
+      name: PropTypes.string,
+      namespace: PropTypes.string,
+      type: PropTypes.string,
+    })
+  };
+  ResourceLink.defaultProps = {
+    resource: {},
+    linkText: ""
+  };
+
   return {
     fetch: apiFetch,
     fetchMetrics,
     fetchPods,
+    fetchServices,
     getMetricsWindow,
     setMetricsWindow,
     getValidMetricsWindows: () => _.keys(validMetricsWindows),
     getMetricsWindowDisplayText,
     urlsForResource,
     PrefixedLink,
+    prefixLink,
+    ResourceLink,
     setCurrentRequests,
     getCurrentPromises,
+    generateResourceURL,
     cancelCurrentRequests,
     // DO NOT USE makeCancelable, use fetch, this is only exposed for testing
     makeCancelable

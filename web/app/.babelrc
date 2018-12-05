@@ -1,8 +1,5 @@
 {
-    "presets":[
-        "env", "react-app"
-    ],
-    "plugins": [
-        ["import", { "libraryName": "antd", "style": "css" }], // `style: true` for less
-    ]
+  "presets": [
+    "env", "react-app"
+  ]
 }

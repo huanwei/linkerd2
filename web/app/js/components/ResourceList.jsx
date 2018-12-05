@@ -1,15 +1,15 @@
-import _ from 'lodash';
-import { apiErrorPropType } from './util/ApiHelpers.jsx';
+import 'whatwg-fetch';
+
+import { metricsPropType, processSingleResourceRollup } from './util/MetricUtils.jsx';
+
 import ErrorBanner from './ErrorBanner.jsx';
-import { friendlyTitle } from './util/Utils.js';
 import MetricsTable from './MetricsTable.jsx';
-import PageHeader from './PageHeader.jsx';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { Spin } from 'antd';
+import Spinner from './util/Spinner.jsx';
+import _ from 'lodash';
+import { apiErrorPropType } from './util/ApiHelpers.jsx';
 import withREST from './util/withREST.jsx';
-import { metricsPropType, processSingleResourceRollup } from './util/MetricUtils.js';
-import 'whatwg-fetch';
 
 export class ResourceListBase extends React.Component {
   static defaultProps = {
@@ -34,10 +34,10 @@ export class ResourceListBase extends React.Component {
   }
 
   content = () => {
-    const {data, loading} = this.props;
+    const {data, loading, error} = this.props;
 
-    if (loading) {
-      return <Spin size="large" />;
+    if (loading && !error) {
+      return <Spinner />;
     }
 
     let processedMetrics = [];
@@ -46,20 +46,20 @@ export class ResourceListBase extends React.Component {
     }
 
     return (
-      <MetricsTable
-        resource={this.props.resource}
-        metrics={processedMetrics} />
+      <React.Fragment>
+        <MetricsTable
+          resource={this.props.resource}
+          metrics={processedMetrics} />
+      </React.Fragment>
     );
   }
 
   render() {
-    const {loading, resource} = this.props;
 
     return (
       <div className="page-content">
         <div>
           {this.banner()}
-          {loading ? null : <PageHeader header={friendlyTitle(resource).plural} />}
           {this.content()}
         </div>
       </div>

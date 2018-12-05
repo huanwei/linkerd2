@@ -16,6 +16,17 @@ message VersionInfo {
   string releaseVersion = 3;
 }
 
+message ListServicesRequest {
+  string namespace = 1;
+}
+message ListServicesResponse {
+  repeated Service services = 1;
+}
+message Service {
+  string name = 1;
+  string namespace = 2;
+}
+
 message ListPodsRequest {
   string namespace = 1;
 }
@@ -40,6 +51,8 @@ message Pod {
   string controllerNamespace = 7; // namespace of controller this pod reports to
   bool controlPlane = 8; // true if this pod is part of the control plane
   google.protobuf.Duration uptime = 9; // uptime of this pod
+  bool proxyReady = 15; // true if this pod has proxy container and that one is in ready state
+  string proxyVersion = 16; // version of the proxy if present
 }
 
 message TapRequest {
@@ -167,6 +180,8 @@ message TapEvent {
   TcpAddress   destination      = 2;
   EndpointMeta destination_meta = 4;
 
+  RouteMeta route_meta = 7;
+
   ProxyDirection proxy_direction = 6;
   enum ProxyDirection {
     UNKNOWN = 0;
@@ -179,6 +194,10 @@ message TapEvent {
   }
 
   message EndpointMeta {
+    map<string, string> labels = 1;
+  }
+
+  message RouteMeta {
     map<string, string> labels = 1;
   }
 
@@ -341,10 +360,42 @@ message StatTable {
   }
 }
 
+message TopRoutesRequest {
+  ResourceSelection selector = 1;
+  string time_window = 2;
+
+  oneof outbound {
+    Empty none = 3;
+    Resource from_resource = 5;
+  }
+}
+
+message TopRoutesResponse {
+  oneof response {
+    RouteTable routes = 1;
+    ResourceError error = 2;
+  }
+}
+
+message RouteTable {
+  repeated Row rows = 1;
+
+  message Row {
+    string route = 1;
+    string time_window = 2;
+
+    BasicStats stats = 5;
+  }
+}
+
 service Api {
   rpc StatSummary(StatSummaryRequest) returns (StatSummaryResponse) {}
 
+  rpc TopRoutes(TopRoutesRequest) returns (TopRoutesResponse) {}
+
   rpc ListPods(ListPodsRequest) returns (ListPodsResponse) {}
+
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse) {}
 
   // Superceded by `TapByResource`.
   rpc Tap(TapRequest) returns (stream TapEvent) { option deprecated = true; }

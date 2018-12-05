@@ -1,7 +1,7 @@
-import { apiErrorPropType } from './util/ApiHelpers.jsx';
-import { Link } from 'react-router-dom';
+import Button from '@material-ui/core/Button';
 import PropTypes from 'prop-types';
 import React from 'react';
+import { apiErrorPropType } from './util/ApiHelpers.jsx';
 import { withContext } from './util/AppContext.jsx';
 
 class Version extends React.Component {
@@ -19,37 +19,63 @@ class Version extends React.Component {
     releaseVersion: PropTypes.string.isRequired,
   }
 
+  numericVersion = version => {
+    let parts = version.split("-", 2);
+    if (parts.length === 2) {
+      return parts[1];
+    } else {
+      return version;
+    }
+  }
+
+  versionChannel = version => {
+    let parts = version.split("-", 2);
+    if (parts.length === 2) {
+      return parts[0];
+    }
+  }
+
   renderVersionCheck = () => {
     const {latestVersion, error, isLatest} = this.props;
 
     if (!latestVersion) {
       return (
         <div>
-          Version check failed
-          {error ? `: ${error.statusText}` : ''}
+          Version check failed{error ? `: ${error.statusText}` : ''}.
         </div>
       );
     }
 
-    if (isLatest) { return "Linkerd is up to date"; }
+    if (isLatest) {
+      return "Linkerd is up to date.";
+    }
 
     return (
       <div>
-        A new version ({latestVersion}) is available<br />
-        <Link
-          to="https://versioncheck.linkerd.io/update"
-          className="button primary"
-          target="_blank">
+        <div className="new-version-text">A new version ({this.numericVersion(latestVersion)}) is available.</div>
+        <Button
+          variant="contained"
+          color="primary"
+          target="_blank"
+          href="https://versioncheck.linkerd.io/update">
           Update Now
-        </Link>
+        </Button>
       </div>
     );
   }
 
   render() {
+    let channel = this.versionChannel(this.props.releaseVersion);
+    let message = `Running ${this.props.productName || "controller"}`;
+    message += ` ${this.numericVersion(this.props.releaseVersion)}`;
+    if (channel) {
+      message += ` (${channel})`;
+    }
+    message += ".";
+
     return (
       <div className="version">
-        Running {this.props.productName || "controller"} {this.props.releaseVersion}<br />
+        {message}<br />
         {this.renderVersionCheck()}
       </div>
     );

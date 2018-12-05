@@ -1,72 +1,104 @@
-import BaseTable from './BaseTable.jsx';
-import React from 'react';
-import { srcDstColumn } from './util/TapUtils.jsx';
+import { directionColumn, srcDstColumn, tapLink } from './util/TapUtils.jsx';
 import { formatLatencySec, numericSort } from './util/Utils.js';
 
-const srcDstSorter = key => {
-  return (a, b) => (a[key].pod || a[key].str).localeCompare(b[key].pod || b[key].str);
-};
+import BaseTable from './BaseTable.jsx';
+import PropTypes from 'prop-types';
+import React from 'react';
+import SuccessRateMiniChart from './util/SuccessRateMiniChart.jsx';
+import _ from 'lodash';
+import { withContext } from './util/AppContext.jsx';
 
-const topColumns = [
+const topColumns = (resourceType, ResourceLink, PrefixedLink) => [
   {
-    title: "Source",
-    key: "source",
-    sorter: srcDstSorter("source"),
-    render: d => srcDstColumn(d.source, d.sourceLabels)
+    title: " ",
+    dataIndex: "direction",
+    render: d => directionColumn(d.direction)
   },
   {
-    title: "Destination",
-    key: "destination",
-    sorter: srcDstSorter("destination"),
-    render: d => srcDstColumn(d.destination, d.destinationLabels)
+    title: "Name",
+    key: "src-dst",
+    render: d => srcDstColumn(d, resourceType, ResourceLink)
+  },
+  {
+    title: "Method",
+    dataIndex: "httpMethod",
+    sorter: (a, b) => a.httpMethod.localeCompare(b.httpMethod)
   },
   {
     title: "Path",
     dataIndex: "path",
-    sorter: (a, b) => a.path.localeCompare(b.path),
+    sorter: (a, b) => a.path.localeCompare(b.path)
   },
   {
     title: "Count",
     dataIndex: "count",
-    defaultSortOrder: "descend",
-    sorter: (a, b) => numericSort(a.count, b.count),
+    isNumeric: true,
+    defaultSortOrder: "desc",
+    sorter: (a, b) => numericSort(a.count, b.count)
   },
   {
     title: "Best",
     dataIndex: "best",
-    sorter: (a, b) => numericSort(a.best, b.best),
-    render: formatLatencySec
+    isNumeric: true,
+    render: d => formatLatencySec(d.best),
+    sorter: (a, b) => numericSort(a.best, b.best)
   },
   {
     title: "Worst",
     dataIndex: "worst",
-    sorter: (a, b) => numericSort(a.worst, b.worst),
-    render: formatLatencySec
+    isNumeric: true,
+    defaultSortOrder: "desc",
+    render: d => formatLatencySec(d.worst),
+    sorter: (a, b) => numericSort(a.worst, b.worst)
   },
   {
     title: "Last",
     dataIndex: "last",
-    sorter: (a, b) => numericSort(a.last, b.last),
-    render: formatLatencySec
+    isNumeric: true,
+    render: d => formatLatencySec(d.last),
+    sorter: (a, b) => numericSort(a.last, b.last)
   },
   {
     title: "Success Rate",
     dataIndex: "successRate",
+    isNumeric: true,
+    render: d => _.isNil(d) || _.isNil(d.successRate) ? "---" :
+    <SuccessRateMiniChart sr={d.successRate.get()} />,
     sorter: (a, b) => numericSort(a.successRate.get(), b.successRate.get()),
-    render: d => !d ? "---" : d.prettyRate()
+  },
+  {
+    title: "Tap",
+    key: "tap",
+    isNumeric: true,
+    render: d => tapLink(d, resourceType, PrefixedLink)
   }
 ];
 
-export default class TopEventTable extends BaseTable {
+class TopEventTable extends React.Component {
+  static propTypes = {
+    api: PropTypes.shape({
+      PrefixedLink: PropTypes.func.isRequired,
+    }).isRequired,
+    resourceType: PropTypes.string.isRequired,
+    tableRows: PropTypes.arrayOf(PropTypes.shape({}))
+  };
+  static defaultProps = {
+    tableRows: []
+  };
+
   render() {
+    const { tableRows, resourceType, api } = this.props;
+    let columns = topColumns(resourceType, api.ResourceLink, api.PrefixedLink);
     return (
       <BaseTable
-        dataSource={this.props.tableRows}
-        columns={topColumns}
-        rowKey="key"
-        pagination={false}
-        className="top-event-table"
-        size="middle" />
+        tableRows={tableRows}
+        tableColumns={columns}
+        tableClassName="metric-table"
+        defaultOrderBy="count"
+        defaultOrder="desc"
+        padding="dense" />
     );
   }
 }
+
+export default withContext(TopEventTable);

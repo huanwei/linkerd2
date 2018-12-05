@@ -38,6 +38,12 @@ func (c *grpcOverHttpClient) StatSummary(ctx context.Context, req *pb.StatSummar
 	return &msg, err
 }
 
+func (c *grpcOverHttpClient) TopRoutes(ctx context.Context, req *pb.TopRoutesRequest, _ ...grpc.CallOption) (*pb.TopRoutesResponse, error) {
+	var msg pb.TopRoutesResponse
+	err := c.apiRequest(ctx, "TopRoutes", req, &msg)
+	return &msg, err
+}
+
 func (c *grpcOverHttpClient) Version(ctx context.Context, req *pb.Empty, _ ...grpc.CallOption) (*pb.VersionInfo, error) {
 	var msg pb.VersionInfo
 	err := c.apiRequest(ctx, "Version", req, &msg)
@@ -53,6 +59,12 @@ func (c *grpcOverHttpClient) SelfCheck(ctx context.Context, req *healthcheckPb.S
 func (c *grpcOverHttpClient) ListPods(ctx context.Context, req *pb.ListPodsRequest, _ ...grpc.CallOption) (*pb.ListPodsResponse, error) {
 	var msg pb.ListPodsResponse
 	err := c.apiRequest(ctx, "ListPods", req, &msg)
+	return &msg, err
+}
+
+func (c *grpcOverHttpClient) ListServices(ctx context.Context, req *pb.ListServicesRequest, _ ...grpc.CallOption) (*pb.ListServicesResponse, error) {
+	var msg pb.ListServicesResponse
+	err := c.apiRequest(ctx, "ListServices", req, &msg)
 	return &msg, err
 }
 
@@ -188,7 +200,7 @@ func NewInternalClient(controlPlaneNamespace string, kubeAPIHost string) (pb.Api
 }
 
 func NewExternalClient(controlPlaneNamespace string, kubeAPI *k8s.KubernetesAPI) (pb.ApiClient, error) {
-	apiURL, err := kubeAPI.UrlFor(controlPlaneNamespace, "/services/http:api:http/proxy/")
+	apiURL, err := kubeAPI.UrlFor(controlPlaneNamespace, "/services/linkerd-controller-api:http/proxy/")
 	if err != nil {
 		return nil, err
 	}

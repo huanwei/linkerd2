@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"time"
 
-	netpb "github.com/linkerd/linkerd2-proxy-api/go/net"
+	httpPb "github.com/linkerd/linkerd2-proxy-api/go/http_types"
+	netPb "github.com/linkerd/linkerd2-proxy-api/go/net"
 	proxy "github.com/linkerd/linkerd2-proxy-api/go/tap"
 	apiUtil "github.com/linkerd/linkerd2/controller/api/util"
 	pb "github.com/linkerd/linkerd2/controller/gen/controller/tap"
@@ -17,6 +17,7 @@ import (
 	"github.com/linkerd/linkerd2/pkg/addr"
 	pkgK8s "github.com/linkerd/linkerd2/pkg/k8s"
 	"github.com/linkerd/linkerd2/pkg/prometheus"
+	"github.com/linkerd/linkerd2/pkg/util"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -26,16 +27,18 @@ import (
 )
 
 const podIPIndex = "ip"
+const defaultMaxRps = 100.0
 
 type (
 	server struct {
-		tapPort uint
-		k8sAPI  *k8s.API
+		tapPort             uint
+		k8sAPI              *k8s.API
+		controllerNamespace string
 	}
 )
 
 var (
-	tapInterval = 10 * time.Second
+	tapInterval = 1 * time.Second
 )
 
 func (s *server) Tap(req *public.TapRequest, stream pb.Tap_TapServer) error {
@@ -47,7 +50,10 @@ func (s *server) TapByResource(req *public.TapByResourceRequest, stream pb.Tap_T
 		return status.Error(codes.InvalidArgument, "TapByResource received nil TapByResourceRequest")
 	}
 	if req.Target == nil {
-		return status.Errorf(codes.InvalidArgument, "TapByResource received nil target ResourceSelection: %+v", *req)
+		return status.Error(codes.InvalidArgument, "TapByResource received nil target ResourceSelection")
+	}
+	if req.MaxRps == 0.0 {
+		req.MaxRps = defaultMaxRps
 	}
 
 	objects, err := s.k8sAPI.GetObjects(req.Target.Resource.Namespace, req.Target.Resource.Type, req.Target.Resource.Name)
@@ -62,21 +68,21 @@ func (s *server) TapByResource(req *public.TapByResourceRequest, stream pb.Tap_T
 			return apiUtil.GRPCError(err)
 		}
 
-		pods = append(pods, podsFor...)
+		for _, pod := range podsFor {
+			if pkgK8s.IsMeshed(pod, s.controllerNamespace) {
+				pods = append(pods, pod)
+			}
+		}
 	}
 
 	if len(pods) == 0 {
-		return status.Errorf(codes.NotFound, "no pods found for ResourceSelection: %+v", *req.Target)
+		return status.Errorf(codes.NotFound, "no pods found for %s/%s",
+			req.GetTarget().GetResource().GetType(), req.GetTarget().GetResource().GetName())
 	}
 
 	log.Infof("Tapping %d pods for target: %+v", len(pods), *req.Target.Resource)
 
 	events := make(chan *public.TapEvent)
-
-	go func() { // Stop sending back events if the request is cancelled
-		<-stream.Context().Done()
-		close(events)
-	}()
 
 	// divide the rps evenly between all pods to tap
 	rpsPerPod := req.MaxRps / float32(len(pods))
@@ -95,46 +101,16 @@ func (s *server) TapByResource(req *public.TapByResourceRequest, stream pb.Tap_T
 	}
 
 	// read events from the taps and send them back
-	for event := range events {
-		err := stream.Send(event)
-		if err != nil {
-			return apiUtil.GRPCError(err)
+	for {
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case event := <-events:
+			err := stream.Send(event)
+			if err != nil {
+				return apiUtil.GRPCError(err)
+			}
 		}
-	}
-	return nil
-}
-
-// TODO: validate scheme
-func parseScheme(scheme string) *proxy.Scheme {
-	value, ok := proxy.Scheme_Registered_value[strings.ToUpper(scheme)]
-	if ok {
-		return &proxy.Scheme{
-			Type: &proxy.Scheme_Registered_{
-				Registered: proxy.Scheme_Registered(value),
-			},
-		}
-	}
-	return &proxy.Scheme{
-		Type: &proxy.Scheme_Unregistered{
-			Unregistered: strings.ToUpper(scheme),
-		},
-	}
-}
-
-// TODO: validate method
-func parseMethod(method string) *proxy.HttpMethod {
-	value, ok := proxy.HttpMethod_Registered_value[strings.ToUpper(method)]
-	if ok {
-		return &proxy.HttpMethod{
-			Type: &proxy.HttpMethod_Registered_{
-				Registered: proxy.HttpMethod_Registered(value),
-			},
-		}
-	}
-	return &proxy.HttpMethod{
-		Type: &proxy.HttpMethod_Unregistered{
-			Unregistered: strings.ToUpper(method),
-		},
 	}
 }
 
@@ -170,13 +146,13 @@ func makeByResourceMatch(match *public.TapByResourceRequest_Match) (*proxy.Obser
 			case *public.TapByResourceRequest_Match_Http_Scheme:
 				httpMatch = proxy.ObserveRequest_Match_Http{
 					Match: &proxy.ObserveRequest_Match_Http_Scheme{
-						Scheme: parseScheme(httpTyped.Scheme),
+						Scheme: util.ParseScheme(httpTyped.Scheme),
 					},
 				}
 			case *public.TapByResourceRequest_Match_Http_Method:
 				httpMatch = proxy.ObserveRequest_Match_Http{
 					Match: &proxy.ObserveRequest_Match_Http_Method{
-						Method: parseMethod(httpTyped.Method),
+						Method: util.ParseMethod(httpTyped.Method),
 					},
 				}
 			case *public.TapByResourceRequest_Match_Http_Authority:
@@ -227,7 +203,8 @@ func makeByResourceMatch(match *public.TapByResourceRequest_Match) (*proxy.Obser
 func destinationLabels(resource *public.Resource) map[string]string {
 	dstLabels := map[string]string{}
 	if resource.Name != "" {
-		dstLabels[resource.Type] = resource.Name
+		l5dLabel := pkgK8s.KindToL5DLabel(resource.Type)
+		dstLabels[l5dLabel] = resource.Name
 	}
 	if resource.Type != pkgK8s.Namespace && resource.Namespace != "" {
 		dstLabels["namespace"] = resource.Namespace
@@ -240,8 +217,8 @@ func destinationLabels(resource *public.Resource) map[string]string {
 // request is cancelled via the context.  Thus it should be called as a
 // go-routine.
 // To limit the rps to maxRps, this method calls Observe on the pod with a limit
-// of maxRps * 10s at most once per 10s window.  If this limit is reached in
-// less than 10s, we sleep until the end of the window before calling Observe
+// of maxRps * 1s at most once per 1s window.  If this limit is reached in
+// less than 1s, we sleep until the end of the window before calling Observe
 // again.
 func (s *server) tapProxy(ctx context.Context, maxRps float32, match *proxy.ObserveRequest_Match, addr string, events chan *public.TapEvent) {
 	tapAddr := fmt.Sprintf("%s:%d", addr, s.tapPort)
@@ -252,6 +229,7 @@ func (s *server) tapProxy(ctx context.Context, maxRps float32, match *proxy.Obse
 		return
 	}
 	client := proxy.NewTapClient(conn)
+	defer conn.Close()
 
 	req := &proxy.ObserveRequest{
 		Limit: uint32(maxRps * float32(tapInterval.Seconds())),
@@ -269,13 +247,23 @@ func (s *server) tapProxy(ctx context.Context, maxRps float32, match *proxy.Obse
 		for { // Stream loop
 			event, err := rsp.Recv()
 			if err == io.EOF {
+				log.Debugf("[%s] proxy terminated the stream", addr)
 				break
 			}
 			if err != nil {
-				log.Error(err)
+				log.Errorf("[%s] encountered an error: %s", addr, err)
 				return
 			}
-			events <- s.translateEvent(event)
+
+			translatedEvent := s.translateEvent(event)
+
+			select {
+			case <-ctx.Done():
+				log.Debugf("[%s] client terminated the stream", addr)
+				return
+			default:
+				events <- translatedEvent
+			}
 		}
 		if time.Now().Before(windowEnd) {
 			time.Sleep(time.Until(windowEnd))
@@ -295,10 +283,10 @@ func (s *server) translateEvent(orig *proxy.TapEvent) *public.TapEvent {
 		}
 	}
 
-	tcp := func(orig *netpb.TcpAddress) *public.TcpAddress {
-		ip := func(orig *netpb.IPAddress) *public.IPAddress {
+	tcp := func(orig *netPb.TcpAddress) *public.TcpAddress {
+		ip := func(orig *netPb.IPAddress) *public.IPAddress {
 			switch i := orig.GetIp().(type) {
-			case *netpb.IPAddress_Ipv6:
+			case *netPb.IPAddress_Ipv6:
 				return &public.IPAddress{
 					Ip: &public.IPAddress_Ipv6{
 						Ipv6: &public.IPv6{
@@ -307,7 +295,7 @@ func (s *server) translateEvent(orig *proxy.TapEvent) *public.TapEvent {
 						},
 					},
 				}
-			case *netpb.IPAddress_Ipv4:
+			case *netPb.IPAddress_Ipv4:
 				return &public.IPAddress{
 					Ip: &public.IPAddress_Ipv4{
 						Ipv4: i.Ipv4,
@@ -332,15 +320,15 @@ func (s *server) translateEvent(orig *proxy.TapEvent) *public.TapEvent {
 			}
 		}
 
-		method := func(orig *proxy.HttpMethod) *public.HttpMethod {
+		method := func(orig *httpPb.HttpMethod) *public.HttpMethod {
 			switch m := orig.GetType().(type) {
-			case *proxy.HttpMethod_Registered_:
+			case *httpPb.HttpMethod_Registered_:
 				return &public.HttpMethod{
 					Type: &public.HttpMethod_Registered_{
 						Registered: public.HttpMethod_Registered(m.Registered),
 					},
 				}
-			case *proxy.HttpMethod_Unregistered:
+			case *httpPb.HttpMethod_Unregistered:
 				return &public.HttpMethod{
 					Type: &public.HttpMethod_Unregistered{
 						Unregistered: m.Unregistered,
@@ -351,15 +339,15 @@ func (s *server) translateEvent(orig *proxy.TapEvent) *public.TapEvent {
 			}
 		}
 
-		scheme := func(orig *proxy.Scheme) *public.Scheme {
+		scheme := func(orig *httpPb.Scheme) *public.Scheme {
 			switch s := orig.GetType().(type) {
-			case *proxy.Scheme_Registered_:
+			case *httpPb.Scheme_Registered_:
 				return &public.Scheme{
 					Type: &public.Scheme_Registered_{
 						Registered: public.Scheme_Registered(s.Registered),
 					},
 				}
-			case *proxy.Scheme_Unregistered:
+			case *httpPb.Scheme_Unregistered:
 				return &public.Scheme{
 					Type: &public.Scheme_Unregistered{
 						Unregistered: s.Unregistered,
@@ -438,14 +426,26 @@ func (s *server) translateEvent(orig *proxy.TapEvent) *public.TapEvent {
 		}
 	}
 
+	sourceLabels := orig.GetSourceMeta().GetLabels()
+	if sourceLabels == nil {
+		sourceLabels = make(map[string]string)
+	}
+	destinationLabels := orig.GetDestinationMeta().GetLabels()
+	if destinationLabels == nil {
+		destinationLabels = make(map[string]string)
+	}
+
 	ev := &public.TapEvent{
 		Source: tcp(orig.GetSource()),
 		SourceMeta: &public.TapEvent_EndpointMeta{
-			Labels: orig.GetSourceMeta().GetLabels(),
+			Labels: sourceLabels,
 		},
 		Destination: tcp(orig.GetDestination()),
 		DestinationMeta: &public.TapEvent_EndpointMeta{
-			Labels: orig.GetDestinationMeta().GetLabels(),
+			Labels: destinationLabels,
+		},
+		RouteMeta: &public.TapEvent_RouteMeta{
+			Labels: orig.GetRouteMeta().GetLabels(),
 		},
 		ProxyDirection: direction(orig.GetProxyDirection()),
 		Event:          event(orig.GetHttp()),
@@ -460,6 +460,7 @@ func (s *server) translateEvent(orig *proxy.TapEvent) *public.TapEvent {
 func NewServer(
 	addr string,
 	tapPort uint,
+	controllerNamespace string,
 	k8sAPI *k8s.API,
 ) (*grpc.Server, net.Listener, error) {
 	k8sAPI.Pod().Informer().AddIndexers(cache.Indexers{podIPIndex: indexPodByIP})
@@ -471,8 +472,9 @@ func NewServer(
 
 	s := prometheus.NewGrpcServer()
 	srv := server{
-		tapPort: tapPort,
-		k8sAPI:  k8sAPI,
+		tapPort:             tapPort,
+		k8sAPI:              k8sAPI,
+		controllerNamespace: controllerNamespace,
 	}
 	pb.RegisterTapServer(s, &srv)
 
@@ -493,7 +495,7 @@ func indexPodByIP(obj interface{}) ([]string, error) {
 // Since errors encountered while hydrating metadata are non-fatal and result
 // only in missing labels, any errors are logged at the WARN level.
 func (s *server) hydrateEventLabels(ev *public.TapEvent) {
-	err := s.hydrateIPLabels(ev.Source.Ip, ev.SourceMeta.Labels)
+	err := s.hydrateIPLabels(ev.GetSource().GetIp(), ev.GetSourceMeta().GetLabels())
 	if err != nil {
 		log.Warnf("error hydrating source labels: %s", err)
 	}
@@ -502,7 +504,7 @@ func (s *server) hydrateEventLabels(ev *public.TapEvent) {
 		// Events emitted by an inbound proxies don't have destination labels,
 		// since the inbound proxy _is_ the destination, and proxies don't know
 		// their own labels.
-		err = s.hydrateIPLabels(ev.Destination.Ip, ev.DestinationMeta.Labels)
+		err = s.hydrateIPLabels(ev.GetDestination().GetIp(), ev.GetDestinationMeta().GetLabels())
 		if err != nil {
 			log.Warnf("error hydrating destination labels: %s", err)
 		}

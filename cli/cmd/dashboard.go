@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/linkerd/linkerd2/pkg/k8s"
 	"github.com/pkg/browser"
@@ -24,14 +25,14 @@ const (
 type dashboardOptions struct {
 	dashboardProxyPort int
 	dashboardShow      string
-	wait               bool
+	wait               time.Duration
 }
 
 func newDashboardOptions() *dashboardOptions {
 	return &dashboardOptions{
 		dashboardProxyPort: 0,
 		dashboardShow:      showLinkerd,
-		wait:               false,
+		wait:               300 * time.Second,
 	}
 }
 
@@ -51,26 +52,26 @@ func newCmdDashboard() *cobra.Command {
 					options.dashboardShow, showLinkerd, showGrafana, showURL)
 			}
 
-			kubernetesProxy, err := k8s.NewProxy(kubeconfigPath, options.dashboardProxyPort)
+			kubernetesProxy, err := k8s.NewProxy(kubeconfigPath, kubeContext, options.dashboardProxyPort)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to initialize proxy: %s\n", err)
 				os.Exit(1)
 			}
 
-			url, err := kubernetesProxy.URLFor(controlPlaneNamespace, "/services/web:http/proxy/")
+			url, err := kubernetesProxy.URLFor(controlPlaneNamespace, "/services/linkerd-web:http/proxy/")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to generate URL for dashboard: %s\n", err)
 				os.Exit(1)
 			}
 
-			grafanaUrl, err := kubernetesProxy.URLFor(controlPlaneNamespace, "/services/grafana:http/proxy/")
+			grafanaUrl, err := kubernetesProxy.URLFor(controlPlaneNamespace, "/services/linkerd-grafana:http/proxy/")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to generate URL for Grafana: %s\n", err)
 				os.Exit(1)
 			}
 
 			// ensure we can connect to the public API before starting the proxy
-			validatedPublicAPIClient(options.wait)
+			validatedPublicAPIClient(time.Now().Add(options.wait))
 
 			fmt.Printf("Linkerd dashboard available at:\n%s\n", url.String())
 			fmt.Printf("Grafana dashboard available at:\n%s\n", grafanaUrl.String())
@@ -111,7 +112,7 @@ func newCmdDashboard() *cobra.Command {
 	// This is identical to what `kubectl proxy --help` reports, `--port 0` indicates a random port.
 	cmd.PersistentFlags().IntVarP(&options.dashboardProxyPort, "port", "p", options.dashboardProxyPort, "The port on which to run the proxy (when set to 0, a random port will be used)")
 	cmd.PersistentFlags().StringVar(&options.dashboardShow, "show", options.dashboardShow, "Open a dashboard in a browser or show URLs in the CLI (one of: linkerd, grafana, url)")
-	cmd.PersistentFlags().BoolVar(&options.wait, "wait", false, "Wait for dashboard to become available if it's not available when the command is run")
+	cmd.PersistentFlags().DurationVar(&options.wait, "wait", options.wait, "Wait for dashboard to become available if it's not available when the command is run")
 
 	return cmd
 }

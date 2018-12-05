@@ -1,15 +1,16 @@
-import _ from 'lodash';
+import 'whatwg-fetch';
+
 import ErrorBanner from './ErrorBanner.jsx';
-import { friendlyTitle } from './util/Utils.js';
 import MetricsTable from './MetricsTable.jsx';
 import NetworkGraph from './NetworkGraph.jsx';
-import PageHeader from './PageHeader.jsx';
-import { processMultiResourceRollup } from './util/MetricUtils.js';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { Spin } from 'antd';
+import Spinner from './util/Spinner.jsx';
+import Typography from '@material-ui/core/Typography';
+import _ from 'lodash';
+import { friendlyTitle } from './util/Utils.js';
+import { processMultiResourceRollup } from './util/MetricUtils.jsx';
 import { withContext } from './util/AppContext.jsx';
-import 'whatwg-fetch';
 
 class Namespaces extends React.Component {
   static defaultProps = {
@@ -61,10 +62,12 @@ class Namespaces extends React.Component {
     this.timerId = window.setInterval(this.loadFromServer, this.state.pollingInterval);
   }
 
-  componentWillReceiveProps(newProps) {
-    // React won't unmount this component when switching resource pages so we need to clear state
-    this.api.cancelCurrentRequests();
-    this.setState(this.getInitialState(newProps.match.params));
+  componentDidUpdate(prevProps) {
+    if (!_.isEqual(prevProps.match.params.namespace, this.props.match.params.namespace)) {
+      // React won't unmount this component when switching resource pages so we need to clear state
+      this.api.cancelCurrentRequests();
+      this.setState(this.getInitialState(this.props.match.params));
+    }
   }
 
   componentWillUnmount() {
@@ -111,7 +114,7 @@ class Namespaces extends React.Component {
     }
     return (
       <div className="page-section">
-        <h1>{friendlyTitle(resource).plural}</h1>
+        <Typography variant="h5">{friendlyTitle(resource).plural}</Typography>
         <MetricsTable
           resource={resource}
           metrics={metrics}
@@ -128,12 +131,13 @@ class Namespaces extends React.Component {
     return (
       <div className="page-content">
         { !this.state.error ? null : <ErrorBanner message={this.state.error} /> }
-        { !this.state.loaded ? <Spin size="large" /> : (
+        { !this.state.loaded ? <Spinner /> : (
           <div>
-            <PageHeader header={`Namespace: ${this.state.ns}`} />
             { noMetrics ? <div>No resources detected.</div> : null}
-            { _.isEmpty(deploymentsWithMetrics) ? null :
-            <NetworkGraph namespace={this.state.ns} deployments={metrics.deployment} />}
+            {
+              _.isEmpty(deploymentsWithMetrics) ? null :
+              <NetworkGraph namespace={this.state.ns} deployments={metrics.deployment} />
+            }
             {this.renderResourceSection("deployment", metrics.deployment)}
             {this.renderResourceSection("replicationcontroller", metrics.replicationcontroller)}
             {this.renderResourceSection("pod", metrics.pod)}

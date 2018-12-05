@@ -1,9 +1,20 @@
-import _ from 'lodash';
-import BaseTable from './BaseTable.jsx';
-import { formatLatencySec } from './util/Utils.js';
+import { directionColumn, srcDstColumn } from './util/TapUtils.jsx';
+import { formatLatencySec, formatWithComma } from './util/Utils.js';
+
+import Card from '@material-ui/core/Card';
+import CardContent from '@material-ui/core/CardContent';
+import CircularProgress from '@material-ui/core/CircularProgress';
+import ExpandableTable from './ExpandableTable.jsx';
+import Grid from '@material-ui/core/Grid';
+import List from '@material-ui/core/List';
+import ListItem from '@material-ui/core/ListItem';
+import ListItemText from '@material-ui/core/ListItemText';
+import PropTypes from 'prop-types';
 import React from 'react';
-import { srcDstColumn } from './util/TapUtils.jsx';
-import { Col, Icon, Row, Table } from 'antd';
+import Typography from '@material-ui/core/Typography';
+import _ from 'lodash';
+import { withContext } from './util/AppContext.jsx';
+import { withStyles } from '@material-ui/core/styles';
 
 // https://godoc.org/google.golang.org/grpc/codes#Code
 const grpcStatusCodes = {
@@ -26,200 +37,191 @@ const grpcStatusCodes = {
   16: "Unauthenticated"
 };
 
-const grpcStatusCodeFilters = _.map(grpcStatusCodes, (description, code) => {
-  return { text: `${code}: ${description}`, value: code };
-});
-
-const genFilterOptionList = options => _.map(options,  (_v, k) => {
-  return { text: k, value: k };
-});
-
-let tapColumns = filterOptions => [
-  {
-    title: "ID",
-    dataIndex: "requestInit.http.requestInit.id.stream"
+const spinnerStyles = theme => ({
+  progress: {
+    margin: theme.spacing.unit * 2,
   },
+});
+const SpinnerBase = () => <CircularProgress size={20} />;
+const Spinner = withStyles(spinnerStyles)(SpinnerBase);
+
+const httpStatusCol = {
+  title: "HTTP status",
+  key: "http-status",
+  render: datum => {
+    let d = _.get(datum, "responseInit.http.responseInit");
+    return !d ? <Spinner /> : d.httpStatus;
+  }
+};
+
+const responseInitLatencyCol = {
+  title: "Latency",
+  key: "rsp-latency",
+  isNumeric: true,
+  render: datum => {
+    let d = _.get(datum, "responseInit.http.responseInit");
+    return !d ? <Spinner /> : formatTapLatency(d.sinceRequestInit);
+  }
+};
+
+const grpcStatusCol = {
+  title: "GRPC status",
+  key: "grpc-status",
+  render: datum => {
+    let d = _.get(datum, "responseEnd.http.responseEnd");
+    return !d ? <Spinner /> :
+      _.isNull(d.eos) ? "---" : grpcStatusCodes[_.get(d, "eos.grpcStatusCode")];
+  }
+};
+
+const pathCol = {
+  title: "Path",
+  key: "path",
+  render: datum => {
+    let d = _.get(datum, "requestInit.http.requestInit");
+    return !d ? <Spinner /> : d.path;
+  }
+};
+
+const methodCol = {
+  title: "Method",
+  key: "method",
+  render: datum => {
+    let d = _.get(datum, "requestInit.http.requestInit");
+    return !d ? <Spinner /> : _.get(d, "method.registered");
+  }
+};
+
+const topLevelColumns = (resourceType, ResourceLink) => [
   {
     title: "Direction",
-    dataIndex: "base.proxyDirection",
-    filters: [
-      { text: "Inbound", value: "INBOUND" },
-      { text: "Outbound", value: "OUTBOUND" }
-    ],
-    onFilter: (value, row) => _.get(row, "base.proxyDirection").includes(value)
+    key: "direction",
+    render: d => directionColumn(d.base.proxyDirection)
   },
   {
-    title: "Source",
-    key: "source",
-    dataIndex: "base",
-    filters: genFilterOptionList(filterOptions.source),
-    onFilter: (value, row) => row.base.source.pod === value || row.base.source.str === value,
-    render: d => srcDstColumn(_.get(d, "source"), _.get(d, "sourceMeta.labels", {}))
-  },
-  {
-    title: "Destination",
-    key: "destination",
-    dataIndex: "base",
-    filters: genFilterOptionList(filterOptions.destination),
-    onFilter: (value, row) => row.base.destination.pod === value || row.base.destination.str === value,
-    render: d => srcDstColumn(_.get(d, "destination"), _.get(d, "destinationMeta.labels", {}))
-  },
-  {
-    title: "TLS",
-    dataIndex: "base.tls",
-    filters: genFilterOptionList(filterOptions.tls),
-    onFilter: (value, row) => row.tls === value
-  },
-  {
-    title: "Request Init",
-    children: [
-      {
-        title: "Authority",
-        key: "authority",
-        dataIndex: "requestInit.http.requestInit",
-        filters: genFilterOptionList(filterOptions.authority),
-        onFilter: (value, row) =>
-          _.get(row, "requestInit.http.requestInit.authority") === value,
-        render: d => !d ? <Icon type="loading" /> : d.authority
-      },
-      {
-        title: "Path",
-        key: "path",
-        dataIndex: "requestInit.http.requestInit",
-        filters: genFilterOptionList(filterOptions.path),
-        onFilter: (value, row) =>
-          _.get(row, "requestInit.http.requestInit.path") === value,
-        render: d => !d ? <Icon type="loading" /> : d.path
-      },
-      {
-        title: "Scheme",
-        key: "scheme",
-        dataIndex: "requestInit.http.requestInit",
-        filters: genFilterOptionList(filterOptions.scheme),
-        onFilter: (value, row) =>
-          _.get(row, "requestInit.http.requestInit.scheme.registered") === value,
-        render: d => !d ? <Icon type="loading" /> : _.get(d, "scheme.registered")
-      },
-      {
-        title: "Method",
-        key: "method",
-        dataIndex: "requestInit.http.requestInit",
-        filters: _.map(filterOptions.httpMethod, d => {
-          return { text: d, value: d};
-        }),
-        onFilter: (value, row) =>
-          _.get(row, "requestInit.http.requestInit.method.registered") === value,
-        render: d => !d ? <Icon type="loading" /> : _.get(d, "method.registered")
-      }
-    ]
-  },
-  {
-    title: "Response Init",
-    children: [
-      {
-        title: "HTTP status",
-        key: "http-status",
-        dataIndex: "responseInit.http.responseInit",
-        filters: genFilterOptionList(filterOptions.httpStatus),
-        onFilter: (value, row) =>
-          _.get(row, "responseInit.http.responseInit.httpStatus") + "" === value,
-        render: d => !d ? <Icon type="loading" /> : d.httpStatus
-      },
-      {
-        title: "Latency",
-        key: "rsp-latency",
-        dataIndex: "responseInit.http.responseInit",
-        render: d => !d ? <Icon type="loading" /> : formatTapLatency(d.sinceRequestInit)
-      },
-    ]
-  },
-  {
-    title: "Response End",
-    children: [
-      {
-        title: "GRPC status",
-        key: "grpc-status",
-        dataIndex: "responseEnd.http.responseEnd",
-        filters: grpcStatusCodeFilters,
-        onFilter: (value, row) =>
-          (_.get(row, "responseEnd.http.responseEnd.eos.grpcStatusCode") + "") === value,
-        render: d => !d ? <Icon type="loading" /> : _.get(d, "eos.grpcStatusCode")
-      },
-      {
-        title: "Latency",
-        key: "end-latency",
-        dataIndex: "responseEnd.http.responseEnd",
-        render: d => !d ? <Icon type="loading" /> : formatTapLatency(d.sinceResponseInit)
-      },
-      {
-        title: "Response Length (B)",
-        key: "rsp-length",
-        dataIndex: "responseEnd.http.responseEnd",
-        render: d => !d ? <Icon type="loading" /> : d.responseBytes
-      },
-    ]
-
+    title: "Name",
+    key: "src-dst",
+    render: d => {
+      let datum = {
+        direction: _.get(d, "base.proxyDirection"),
+        source: _.get(d, "base.source"),
+        destination: _.get(d, "base.destination"),
+        sourceLabels: _.get(d, "base.sourceMeta.labels", {}),
+        destinationLabels: _.get(d, "base.destinationMeta.labels", {})
+      };
+      return srcDstColumn(datum, resourceType, ResourceLink);
+    }
   }
 ];
+
+const tapColumns = (resourceType, ResourceLink) => {
+  return _.concat(
+    topLevelColumns(resourceType, ResourceLink),
+    [ methodCol, pathCol, responseInitLatencyCol, httpStatusCol, grpcStatusCol ]
+  );
+};
 
 const formatTapLatency = str => {
   return formatLatencySec(str.replace("s", ""));
 };
 
-const srcDstMetaColumns = [
-  {
-    title: "",
-    dataIndex: "labelName"
-  },
-  {
-    title: "",
-    dataIndex: "labelVal"
-  }
-];
-const renderMetaLabels = (title, labels) => {
-  let data = _.map(labels, (v, k) => {
-    return {
-      labelName: k,
-      labelVal: v
-    };
-  });
+const itemDisplay = (title, value) => {
   return (
-    <React.Fragment>
-      <div>{title}</div>
-      <Table
-        className="meta-table-nested"
-        columns={srcDstMetaColumns}
-        dataSource={data}
-        size="small"
-        rowKey={row => title.replace(" ", "_") + row.labelName + row.labelVal}
-        bordered={false}
-        showHeader={false}
-        pagination={false} />
-    </React.Fragment>
+    <ListItem disableGutters>
+      <ListItemText primary={title} secondary={value} />
+    </ListItem>
   );
 };
+
+const requestInitSection = d => (
+  <React.Fragment>
+    <Typography variant="subtitle2">Request Init</Typography>
+    <br />
+    <List dense>
+      {itemDisplay("Authority", _.get(d, "requestInit.http.requestInit.authority"))}
+      {itemDisplay("Path", _.get(d, "requestInit.http.requestInit.path"))}
+      {itemDisplay("Scheme", _.get(d, "requestInit.http.requestInit.scheme.registered"))}
+      {itemDisplay("Method", _.get(d, "requestInit.http.requestInit.method.registered"))}
+      {itemDisplay("TLS", _.get(d, "base.tls"))}
+    </List>
+  </React.Fragment>
+);
+
+const responseInitSection = d => _.isEmpty(d.responseInit) ? null : (
+  <React.Fragment>
+    <Typography variant="subtitle2">Response Init</Typography>
+    <br />
+    <List dense>
+      {itemDisplay("HTTP Status", _.get(d, "responseInit.http.responseInit.httpStatus"))}
+      {itemDisplay("Latency", formatTapLatency(_.get(d, "responseInit.http.responseInit.sinceRequestInit")))}
+    </List>
+  </React.Fragment>
+);
+
+const responseEndSection = d => _.isEmpty(d.responseEnd) ? null : (
+  <React.Fragment>
+    <Typography variant="subtitle2">Response End</Typography>
+    <br />
+
+    <List dense>
+      {itemDisplay("GRPC Status", _.isNull(_.get(d, "responseEnd.http.responseEnd.eos")) ? "N/A" : grpcStatusCodes[_.get(d, "responseEnd.http.responseEnd.eos.grpcStatusCode")])}
+      {itemDisplay("Latency", formatTapLatency(_.get(d, "responseEnd.http.responseEnd.sinceResponseInit")))}
+      {itemDisplay("Response Length (B)", formatWithComma(_.get(d, "responseEnd.http.responseEnd.responseBytes")))}
+    </List>
+  </React.Fragment>
+);
+
 
 // hide verbose information
 const expandedRowRender = d => {
   return (
-    <Row gutter={8}>
-      <Col span={12}>{ renderMetaLabels("Source Metadata", _.get(d, "base.sourceMeta.labels", {})) }</Col>
-      <Col span={12}>{ renderMetaLabels("Destination Metadata", _.get(d, "base.destinationMeta.labels", {})) }</Col>
-    </Row>
+    <Grid container spacing={16} className="tap-more-info">
+      <Grid item xs={4}>
+        <Card>
+          <CardContent>{requestInitSection(d)}</CardContent>
+        </Card>
+      </Grid>
+      <Grid item xs={4}>
+        <Card>
+          <CardContent>{responseInitSection(d)}</CardContent>
+        </Card>
+      </Grid>
+      <Grid item xs={4}>
+        <Card>
+          <CardContent>{responseEndSection(d)}</CardContent>
+        </Card>
+      </Grid>
+    </Grid>
   );
 };
 
-export default class TapEventTable extends BaseTable {
+class TapEventTable extends React.Component {
+  static propTypes = {
+    api: PropTypes.shape({
+      ResourceLink: PropTypes.func.isRequired,
+    }).isRequired,
+    resource: PropTypes.string,
+    tableRows: PropTypes.arrayOf(PropTypes.shape({})),
+  }
+
+  static defaultProps = {
+    resource: "",
+    tableRows: []
+  }
+
   render() {
+    const { tableRows, resource, api } = this.props;
+    let resourceType = resource.split("/")[0];
+    let columns = tapColumns(resourceType, api.ResourceLink);
+
     return (
-      <BaseTable
-        dataSource={this.props.tableRows}
-        columns={tapColumns(this.props.filterOptions)}
+      <ExpandableTable
+        tableRows={tableRows}
+        tableColumns={columns}
         expandedRowRender={expandedRowRender}
-        rowKey={r => r.base.id}
-        pagination={false}
-        className="tap-event-table"
-        size="middle" />
+        tableClassName="metric-table" />
     );
   }
 }
+
+export default withContext(TapEventTable);

@@ -1,12 +1,15 @@
-required = ["github.com/golang/protobuf/protoc-gen-go"]
-
-[prune]
-  unused-packages = true
-  go-tests = true
+required = [
+  "github.com/golang/protobuf/protoc-gen-go",
+  "k8s.io/code-generator/cmd/client-gen",
+  "k8s.io/code-generator/cmd/deepcopy-gen",
+  "k8s.io/code-generator/cmd/defaulter-gen",
+  "k8s.io/code-generator/cmd/lister-gen",
+  "k8s.io/code-generator/cmd/informer-gen",
+]
 
 [[constraint]]
   name = "github.com/linkerd/linkerd2-proxy-api"
-  version = "v0.1.1"
+  version = "v0.1.4"
 
 [[constraint]]
   name = "google.golang.org/grpc"
@@ -42,7 +45,7 @@ required = ["github.com/golang/protobuf/protoc-gen-go"]
 
 [[constraint]]
   name = "github.com/golang/protobuf"
-  revision = "1e59b77b52bf8e4b449a57e6f79f21226d571845" # recent versions introduce breaking changes
+  version = "v1.2.0"
 
 [[constraint]]
   name = "github.com/prometheus/client_golang"
@@ -51,6 +54,10 @@ required = ["github.com/golang/protobuf/protoc-gen-go"]
 [[constraint]]
   name = "github.com/gorilla/websocket"
   version = "1.2.0"
+
+[[constraint]]
+  name = "github.com/go-openapi/spec"
+  version = "v0.17.2"
 #
 # k8s.io/kubernetes dependency fixes
 # taken from https://github.com/kubernetes/kubernetes/blob/master/Godeps/Godeps.json

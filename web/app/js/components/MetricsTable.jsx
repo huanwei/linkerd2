@@ -1,170 +1,132 @@
-import _ from 'lodash';
+import { friendlyTitle, metricToFormatter, numericSort } from './util/Utils.js';
+
 import BaseTable from './BaseTable.jsx';
 import ErrorModal from './ErrorModal.jsx';
 import GrafanaLink from './GrafanaLink.jsx';
-import { processedMetricsPropType } from './util/MetricUtils.js';
+import Grid from '@material-ui/core/Grid';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { Tooltip } from 'antd';
+import SuccessRateMiniChart from './util/SuccessRateMiniChart.jsx';
+import _ from 'lodash';
+import { processedMetricsPropType } from './util/MetricUtils.jsx';
 import { withContext } from './util/AppContext.jsx';
-import {
-  friendlyTitle,
-  metricToFormatter,
-  numericSort
-} from './util/Utils.js';
 
-/*
-  Table to display Success Rate, Requests and Latency in tabs.
-  Expects rollup and timeseries data.
-*/
-
-const withTooltip = (d, metricName) => {
-  return (
-    <Tooltip
-      title={metricToFormatter["UNTRUNCATED"](d)}
-      overlayStyle={{ fontSize: "12px" }}>
-      <span>{metricToFormatter[metricName](d)}</span>
-    </Tooltip>
-  );
-};
-
-const formatTitle = (title, tooltipText) => {
-  if (!tooltipText) {
-    return title;
-  } else {
-    return (
-      <Tooltip
-        title={tooltipText}
-        overlayStyle={{ fontSize: "12px" }}>
-        {title}
-      </Tooltip>
-    );
-  }
-
-};
-
-const meshedColumn = {
-  title: formatTitle("Meshed"),
-  dataIndex: "pods",
-  key: "pods",
-  className: "numeric",
-  sorter: (a, b) => numericSort(a.pods.totalPods, b.pods.totalPods),
-  render: p => p.meshedPods + "/" + p.totalPods
-};
-
-const columnDefinitions = (resource, namespaces, onFilterClick, showNamespaceColumn, PrefixedLink) => {
+const columnDefinitions = (resource, showNamespaceColumn, PrefixedLink) => {
   let isAuthorityTable = resource === "authority";
 
   let nsColumn = [
     {
-      title: formatTitle("Namespace"),
-      key: "namespace",
+      title: "Namespace",
       dataIndex: "namespace",
-      filters: namespaces,
-      onFilterDropdownVisibleChange: onFilterClick,
-      onFilter: (value, row) => row.namespace.indexOf(value) === 0,
-      sorter: (a, b) => (a.namespace || "").localeCompare(b.namespace),
-      render: ns => {
-        return <PrefixedLink to={"/namespaces/" + ns}>{ns}</PrefixedLink>;
-      }
+      isNumeric: false,
+      render: d => !d.namespace ? "---" : <PrefixedLink to={"/namespaces/" + d.namespace}>{d.namespace}</PrefixedLink>,
+      sorter: (a, b) => (a.namespace || "").localeCompare(b.namespace)
     }
   ];
 
-  let grafanaLinkColumn = [
-    {
-      title: formatTitle("Dash", "Grafana Dashboard"),
-      key: "grafanaDashboard",
-      className: "numeric",
-      render: row => !row.added ? null : (
-        <GrafanaLink
-          name={row.name}
-          namespace={row.namespace}
-          resource={resource}
-          PrefixedLink={PrefixedLink} />
-      )}
-  ];
+  let meshedColumn = {
+    title: "Meshed",
+    dataIndex: "pods.totalPods",
+    isNumeric: true,
+    render: d => !d.pods ? null : d.pods.meshedPods + "/" + d.pods.totalPods,
+    sorter: (a, b) => numericSort(a.pods.totalPods, b.pods.totalPods)
+  };
 
   let columns = [
     {
-      title: formatTitle(friendlyTitle(resource).singular),
-      key: "name",
-      defaultSortOrder: 'ascend',
-      sorter: (a, b) => (a.name || "").localeCompare(b.name),
-      render: row => {
+      title: friendlyTitle(resource).singular,
+      dataIndex: "name",
+      isNumeric: false,
+      render: d => {
         let nameContents;
         if (resource === "namespace") {
-          nameContents = <PrefixedLink to={"/namespaces/" + row.name}>{row.name}</PrefixedLink>;
-        } else if (!row.added || isAuthorityTable) {
-          nameContents = row.name;
+          nameContents = <PrefixedLink to={"/namespaces/" + d.name}>{d.name}</PrefixedLink>;
+        } else if (!d.added || isAuthorityTable) {
+          nameContents = d.name;
         } else {
           nameContents = (
-            <PrefixedLink to={"/namespaces/" + row.namespace + "/" + resource + "s/" + row.name}>
-              {row.name}
+            <PrefixedLink to={"/namespaces/" + d.namespace + "/" + resource + "s/" + d.name}>
+              {d.name}
             </PrefixedLink>
           );
         }
         return (
-          <React.Fragment>
-            {nameContents}
-            { _.isEmpty(row.errors) ? null : <ErrorModal errors={row.errors} resourceName={row.name} resourceType={resource} /> }
-          </React.Fragment>
+          <Grid container alignItems="center" spacing={8}>
+            <Grid item>{nameContents}</Grid>
+            { _.isEmpty(d.errors) ? null :
+            <Grid item><ErrorModal errors={d.errors} resourceName={d.name} resourceType={resource} /></Grid>}
+          </Grid>
+        );
+      },
+      sorter: (a, b) => (a.name || "").localeCompare(b.name)
+    },
+    {
+      title: "Success Rate",
+      dataIndex: "successRate",
+      isNumeric: true,
+      render: d => <SuccessRateMiniChart sr={d.successRate} />,
+      sorter: (a, b) => numericSort(a.successRate, b.successRate)
+    },
+    {
+      title: "RPS",
+      dataIndex: "requestRate",
+      isNumeric: true,
+      render: d => metricToFormatter["NO_UNIT"](d.requestRate),
+      sorter: (a, b) => numericSort(a.requestRate, b.requestRate)
+    },
+    {
+      title: "P50 Latency",
+      dataIndex: "P50",
+      isNumeric: true,
+      render: d => metricToFormatter["LATENCY"](d.P50),
+      sorter: (a, b) => numericSort(a.P50, b.P50)
+    },
+    {
+      title: "P95 Latency",
+      dataIndex: "P95",
+      isNumeric: true,
+      render: d => metricToFormatter["LATENCY"](d.P95),
+      sorter: (a, b) => numericSort(a.P95, b.P95)
+    },
+    {
+      title: "P99 Latency",
+      dataIndex: "P99",
+      isNumeric: true,
+      render: d => metricToFormatter["LATENCY"](d.P99),
+      sorter: (a, b) => numericSort(a.P99, b.P99)
+    },
+    {
+      title: "TLS",
+      dataIndex: "tlsRequestPercent",
+      isNumeric: true,
+      render: d => _.isNil(d.tlsRequestPercent) || d.tlsRequestPercent.get() === -1 ? "---" : d.tlsRequestPercent.prettyRate(),
+      sorter: (a, b) => numericSort(
+        a.tlsRequestPercent ? a.tlsRequestPercent.get() : -1,
+        b.tlsRequestPercent ? b.tlsRequestPercent.get() : -1)
+    },
+    {
+      title: "Grafana",
+      key: "grafanaDashboard",
+      isNumeric: true,
+      render: row => {
+        if (!isAuthorityTable && (!row.added || _.get(row, "pods.totalPods") === "0") ) {
+          return null;
+        }
+
+        return (
+          <GrafanaLink
+            name={row.name}
+            namespace={row.namespace}
+            resource={resource}
+            PrefixedLink={PrefixedLink} />
         );
       }
-    },
-    {
-      title: formatTitle("SR", "Success Rate"),
-      dataIndex: "successRate",
-      key: "successRateRollup",
-      className: "numeric",
-      sorter: (a, b) => numericSort(a.successRate, b.successRate),
-      render: d => metricToFormatter["SUCCESS_RATE"](d)
-    },
-    {
-      title: formatTitle("RPS", "Request Rate"),
-      dataIndex: "requestRate",
-      key: "requestRateRollup",
-      className: "numeric",
-      sorter: (a, b) => numericSort(a.requestRate, b.requestRate),
-      render: d => withTooltip(d, "REQUEST_RATE")
-    },
-    {
-      title: formatTitle("P50", "P50 Latency"),
-      dataIndex: "P50",
-      key: "p50LatencyRollup",
-      className: "numeric",
-      sorter: (a, b) => numericSort(a.P50, b.P50),
-      render: metricToFormatter["LATENCY"]
-    },
-    {
-      title: formatTitle("P95", "P95 Latency"),
-      dataIndex: "P95",
-      key: "p95LatencyRollup",
-      className: "numeric",
-      sorter: (a, b) => numericSort(a.P95, b.P95),
-      render: metricToFormatter["LATENCY"]
-    },
-    {
-      title: formatTitle("P99", "P99 Latency"),
-      dataIndex: "P99",
-      key: "p99LatencyRollup",
-      className: "numeric",
-      sorter: (a, b) => numericSort(a.P99, b.P99),
-      render: metricToFormatter["LATENCY"]
-    },
-    {
-      title: formatTitle("TLS", "Percentage of TLS Traffic"),
-      key: "tlsTraffic",
-      dataIndex: "tlsRequestPercent",
-      className: "numeric",
-      sorter: (a, b) => numericSort(a.tlsRequestPercent.get(), b.tlsRequestPercent.get()),
-      render: d => _.isNil(d) || d.get() === -1 ? "---" : d.prettyRate()
     }
   ];
 
   // don't add the meshed column on a Authority MetricsTable
   if (!isAuthorityTable) {
     columns.splice(1, 0, meshedColumn);
-    columns = _.concat(columns, grafanaLinkColumn);
   }
 
   if (!showNamespaceColumn) {
@@ -174,94 +136,50 @@ const columnDefinitions = (resource, namespaces, onFilterClick, showNamespaceCol
   }
 };
 
-/** @extends React.Component */
-export class MetricsTableBase extends BaseTable {
-  static defaultProps = {
-    showNamespaceColumn: true
-  }
 
+const preprocessMetrics = metrics => {
+  let tableData = _.cloneDeep(metrics);
+
+  _.each(tableData, datum => {
+    _.each(datum.latency, (value, quantile) => {
+      datum[quantile] = value;
+    });
+  });
+
+  return tableData;
+};
+
+class MetricsTable extends React.Component {
   static propTypes = {
     api: PropTypes.shape({
       PrefixedLink: PropTypes.func.isRequired,
     }).isRequired,
-    metrics: PropTypes.arrayOf(processedMetricsPropType.isRequired).isRequired,
+    metrics: PropTypes.arrayOf(processedMetricsPropType),
     resource: PropTypes.string.isRequired,
     showNamespaceColumn: PropTypes.bool
-  }
+  };
 
-  constructor(props) {
-    super(props);
-    this.api = this.props.api;
-    this.onFilterDropdownVisibleChange = this.onFilterDropdownVisibleChange.bind(this);
-    this.state = {
-      preventTableUpdates: false
-    };
-  }
-
-  shouldComponentUpdate() {
-    // prevent the table from updating if the filter dropdown menu is open
-    // this is because if the table updates, the filters will reset which
-    // makes it impossible to select a filter
-    return !this.state.preventTableUpdates;
-  }
-
-  onFilterDropdownVisibleChange(dropdownVisible) {
-    this.setState({ preventTableUpdates: dropdownVisible});
-  }
-
-  preprocessMetrics() {
-    let tableData = _.cloneDeep(this.props.metrics);
-    let namespaces = [];
-
-    _.each(tableData, datum => {
-      namespaces.push(datum.namespace);
-      _.each(datum.latency, (value, quantile) => {
-        datum[quantile] = value;
-      });
-    });
-
-    return {
-      rows: tableData,
-      namespaces: _.uniq(namespaces)
-    };
-  }
+  static defaultProps = {
+    showNamespaceColumn: true,
+    metrics: []
+  };
 
   render() {
-    let tableData = this.preprocessMetrics();
-    let namespaceFilterText = _.map(tableData.namespaces, ns => {
-      return { text: ns, value: ns };
-    });
+    const {  metrics, resource, showNamespaceColumn, api } = this.props;
 
-    let resource = this.props.resource;
+    let showNsColumn = resource === "namespace" ? false : showNamespaceColumn;
 
-    let showNsColumn = this.props.showNamespaceColumn;
-    if (resource === "namespace") {
-      showNsColumn = false;
-    }
-
-    let columns = _.compact(columnDefinitions(
-      resource,
-      namespaceFilterText,
-      this.onFilterDropdownVisibleChange,
-      showNsColumn,
-      this.api.PrefixedLink
-    ));
-
-    let locale = {
-      emptyText: `No ${friendlyTitle(resource).plural} detected.`
-    };
-
+    let columns = columnDefinitions(resource, showNsColumn, api.PrefixedLink);
+    let rows = preprocessMetrics(metrics);
     return (
       <BaseTable
-        dataSource={tableData.rows}
-        columns={columns}
-        pagination={false}
-        className="metric-table"
-        rowKey={r => `${r.namespace}/${r.name}`}
-        locale={locale}
-        size="middle" />
+        tableRows={rows}
+        tableColumns={columns}
+        tableClassName="metric-table"
+        defaultOrderBy="name"
+        padding="dense" />
     );
   }
 }
 
-export default withContext(MetricsTableBase);
+export default withContext(MetricsTable);

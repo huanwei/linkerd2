@@ -62,12 +62,12 @@ func TestCertificateController(t *testing.T) {
 }
 
 func new(fixtures ...string) (*CertificateController, chan bool, chan struct{}, error) {
-	k8sAPI, err := k8s.NewFakeAPI(fixtures...)
+	k8sAPI, err := k8s.NewFakeAPI("", fixtures...)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("NewFakeAPI returned an error: %s", err)
 	}
 
-	controller, err := NewCertificateController(controllerNS, k8sAPI)
+	controller, err := NewCertificateController(controllerNS, k8sAPI, false)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("NewCertificateController returned an error: %s", err)
 	}

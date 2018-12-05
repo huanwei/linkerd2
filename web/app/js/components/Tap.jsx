@@ -1,32 +1,40 @@
-import _ from 'lodash';
+import { UrlQueryParamTypes, addUrlProps } from 'react-url-query';
+import { emptyTapQuery, processTapEvent, setMaxRps, wsCloseCodes } from './util/TapUtils.jsx';
+
 import ErrorBanner from './ErrorBanner.jsx';
-import PageHeader from './PageHeader.jsx';
 import PropTypes from 'prop-types';
 import React from 'react';
 import TapEventTable from './TapEventTable.jsx';
-import TapQueryCliCmd from './TapQueryCliCmd.jsx';
 import TapQueryForm from './TapQueryForm.jsx';
+import _ from 'lodash';
 import { withContext } from './util/AppContext.jsx';
-import { defaultMaxRps, httpMethods, processTapEvent } from './util/TapUtils.jsx';
-import './../../css/tap.css';
 
-const maxNumFilterOptions = 12;
+const urlPropsQueryConfig = {
+  autostart: { type: UrlQueryParamTypes.string }
+};
+
 class Tap extends React.Component {
   static propTypes = {
     api: PropTypes.shape({
       PrefixedLink: PropTypes.func.isRequired,
     }).isRequired,
+    autostart: PropTypes.string,
     pathPrefix: PropTypes.string.isRequired
+  }
+
+  static defaultProps = {
+    autostart: ""
   }
 
   constructor(props) {
     super(props);
     this.api = this.props.api;
+    this.tapResultsById = {};
+    this.throttledWebsocketRecvHandler = _.throttle(this.updateTapResults, 500);
     this.loadFromServer = this.loadFromServer.bind(this);
 
     this.state = {
-      tapResultsById: {},
-      tapResultFilterOptions: this.getInitialTapFilterOptions(),
+      tapResultsById: this.tapResultsById,
       error: null,
       resourcesByNs: {},
       authoritiesByNs: {},
@@ -39,30 +47,36 @@ class Tap extends React.Component {
         path: "",
         scheme: "",
         authority: "",
-        maxRps: defaultMaxRps
+        maxRps: ""
       },
       maxLinesToDisplay: 40,
       tapRequestInProgress: false,
+      tapIsClosing: false,
       pollingInterval: 10000,
       pendingRequests: false
     };
   }
 
   componentDidMount() {
+    this._isMounted = true; // https://reactjs.org/blog/2015/12/16/ismounted-antipattern.html
     this.startServerPolling();
+    if (this.props.autostart === "true") {
+      this.startTapStreaming();
+    }
   }
 
   componentWillUnmount() {
+    this._isMounted = false;
     if (this.ws) {
       this.ws.close(1000);
     }
-    this.stopTapStreaming();
+    this.throttledWebsocketRecvHandler.cancel();
     this.stopServerPolling();
   }
 
   onWebsocketOpen = () => {
     let query = _.cloneDeep(this.state.query);
-    query.maxRps = parseFloat(query.maxRps);
+    setMaxRps(query);
 
     this.ws.send(JSON.stringify({
       id: "tap-web",
@@ -75,15 +89,20 @@ class Tap extends React.Component {
 
   onWebsocketRecv = e => {
     this.indexTapResult(e.data);
+    this.throttledWebsocketRecvHandler();
   }
 
   onWebsocketClose = e => {
     this.stopTapStreaming();
-
-    if (!e.wasClean) {
+    /* We ignore any abnormal closure since it doesn't matter as long as
+    the connection to the websocket is closed. This is also a workaround
+    where Chrome browsers incorrectly displays a 1006 close code
+    https://github.com/linkerd/linkerd2/issues/1630
+    */
+    if (!e.wasClean && e.code !== 1006 && this._isMounted) {
       this.setState({
         error: {
-          error: `Websocket [${e.code}] ${e.reason}`
+          error: `Websocket close error [${e.code}: ${wsCloseCodes[e.code]}] ${e.reason ? ":" : ""} ${e.reason}`
         }
       });
     }
@@ -91,30 +110,23 @@ class Tap extends React.Component {
 
   onWebsocketError = e => {
     this.setState({
-      error: { error: e.message }
+      error: { error: `Websocket error: ${e.message}` }
     });
 
     this.stopTapStreaming();
-  }
-
-  getInitialTapFilterOptions() {
-    return {
-      source: {},
-      destination: {},
-      path: {},
-      authority: {},
-      scheme: {},
-      httpStatus: {},
-      tls: {},
-      httpMethod: httpMethods
-    };
   }
 
   getResourcesByNs(rsp) {
     let statTables = _.get(rsp, [0, "ok", "statTables"]);
     let authoritiesByNs = {};
     let resourcesByNs = _.reduce(statTables, (mem, table) => {
-      _.map(table.podGroup.rows, row => {
+      _.each(table.podGroup.rows, row => {
+        // filter out resources that aren't meshed. note that authorities don't
+        // have pod counts and therefore can't be filtered out here
+        if (row.meshedPodCount === "0" && row.resource.type !== "authority") {
+          return;
+        }
+
         if (!mem[row.resource.namespace]) {
           mem[row.resource.namespace] = [];
           authoritiesByNs[row.resource.namespace] = [];
@@ -138,72 +150,12 @@ class Tap extends React.Component {
     };
   }
 
-  getFilterOptions(d) {
-    let filters = this.state.tapResultFilterOptions;
-    // keep track of unique values we encounter, to populate the table filters
-    let addFilter = this.genFilterAdder(filters, Date.now());
-    addFilter("source", d.source.str);
-    addFilter("destination", d.destination.str);
-    if (d.source.pod) {
-      addFilter("source", d.source.pod);
-    }
-    if (d.destination.pod) {
-      addFilter("destination", d.destination.pod);
-    }
-
-    if (d.tls) {
-      addFilter("tls", d.tls);
-    }
-    switch (d.eventType) {
-      case "requestInit":
-        addFilter("authority", d.http.requestInit.authority);
-        addFilter("path", d.http.requestInit.path);
-        addFilter("scheme", _.get(d, "http.requestInit.scheme.registered"));
-        break;
-      case "responseInit":
-        addFilter("httpStatus", _.get(d, "http.responseInit.httpStatus"));
-        break;
-    }
-
-    return filters;
-  }
-
-  parseTapResult = data => {
-    let d = processTapEvent(data);
-
-    return {
-      tapResult: d,
-      updatedFilters: this.getFilterOptions(d)
-    };
-  }
-
-  genFilterAdder(filterOptions, now) {
-    return (filterName, filterValue) => {
-      filterOptions[filterName][filterValue] = now;
-
-      if (_.size(filterOptions[filterName]) > maxNumFilterOptions) {
-        // reevaluate this if table updating gets too slow
-        let oldest = Date.now();
-        let oldestOption = "";
-        _.each(filterOptions[filterName], (timestamp, value) => {
-          if (timestamp < oldest) {
-            oldest = timestamp;
-            oldestOption = value;
-          }
-        });
-
-        delete filterOptions[filterName][oldestOption];
-      }
-    };
-  }
-
   indexTapResult = data => {
     // keep an index of tap request rows by id. this allows us to collate
     // requestInit/responseInit/responseEnd into one single table row,
     // as opposed to three separate rows as in the CLI
-    let resultIndex = this.state.tapResultsById;
-    let parsedResults = this.parseTapResult(data);
-    let d = parsedResults.tapResult;
+    let resultIndex = this.tapResultsById;
+    let d = processTapEvent(data);
 
     if (_.isNil(resultIndex[d.id])) {
       // don't let tapResultsById grow unbounded
@@ -216,11 +168,13 @@ class Tap extends React.Component {
     resultIndex[d.id][d.eventType] = d;
     // assumption: requests of a given id all share the same high level metadata
     resultIndex[d.id]["base"] = d;
+    resultIndex[d.id].key = d.id;
     resultIndex[d.id].lastUpdated = Date.now();
+  }
 
+  updateTapResults = () => {
     this.setState({
-      tapResultsById: resultIndex,
-      tapResultFilterOptions: parsedResults.updatedFilters
+      tapResultsById: this.tapResultsById
     });
   }
 
@@ -249,10 +203,11 @@ class Tap extends React.Component {
   }
 
   startTapStreaming() {
+    this.tapResultsById = {};
+
     this.setState({
       tapRequestInProgress: true,
-      tapResultsById: {},
-      tapResultFilterOptions: this.getInitialTapFilterOptions()
+      tapResultsById: this.tapResultsById
     });
 
     let protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -266,8 +221,13 @@ class Tap extends React.Component {
   }
 
   stopTapStreaming() {
+    if (!this._isMounted) {
+      return;
+    }
+
     this.setState({
-      tapRequestInProgress: false
+      tapRequestInProgress: false,
+      tapIsClosing: false
     });
   }
 
@@ -278,6 +238,19 @@ class Tap extends React.Component {
 
   handleTapStop = () => {
     this.ws.close(1000);
+    this.setState({ tapIsClosing: true });
+  }
+
+  handleTapClear = () => {
+    this.resetTapResults();
+  }
+
+  resetTapResults = () => {
+    this.tapResultsById = {};
+    this.setState({
+      tapResultsById: {},
+      query: emptyTapQuery()
+    });
   }
 
   loadFromServer() {
@@ -288,7 +261,7 @@ class Tap extends React.Component {
       pendingRequests: true
     });
 
-    let url = "/api/tps-reports?resource_type=all&all_namespaces=true";
+    let url = this.api.urlsForResource("all");
     this.api.setCurrentRequests([this.api.fetchMetrics(url)]);
     this.serverPromise = Promise.all(this.api.getCurrentPromises())
       .then(rsp => {
@@ -329,24 +302,24 @@ class Tap extends React.Component {
         {!this.state.error ? null :
         <ErrorBanner message={this.state.error} onHideMessage={() => this.setState({ error: null })} />}
 
-        <PageHeader header="Tap" />
         <TapQueryForm
+          cmdName="tap"
           tapRequestInProgress={this.state.tapRequestInProgress}
+          tapIsClosing={this.state.tapIsClosing}
           handleTapStart={this.handleTapStart}
           handleTapStop={this.handleTapStop}
+          handleTapClear={this.handleTapClear}
           resourcesByNs={this.state.resourcesByNs}
           authoritiesByNs={this.state.authoritiesByNs}
           updateQuery={this.updateQuery}
           query={this.state.query} />
 
-        <TapQueryCliCmd cmdName="tap" query={this.state.query} />
-
         <TapEventTable
-          tableRows={tableRows}
-          filterOptions={this.state.tapResultFilterOptions} />
+          resource={this.state.query.resource}
+          tableRows={tableRows} />
       </div>
     );
   }
 }
 
-export default withContext(Tap);
+export default addUrlProps({ urlPropsQueryConfig })(withContext(Tap));

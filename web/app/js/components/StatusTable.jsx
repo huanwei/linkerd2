@@ -1,7 +1,13 @@
-import _ from 'lodash';
+import BaseTable from './BaseTable.jsx';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { Table, Tooltip } from 'antd';
+import Tooltip from '@material-ui/core/Tooltip';
+import _ from 'lodash';
+import classNames from 'classnames';
+import { statusClassNames } from './util/theme.js';
+import { withStyles } from '@material-ui/core/styles';
+
+const styles = theme => statusClassNames(theme);
 
 const columnConfig = {
   "Pod Status": {
@@ -27,7 +33,7 @@ const columnConfig = {
   }
 };
 
-const StatusDot = ({status, multilineDots, columnName}) => (
+const StatusDot = ({status, multilineDots, columnName, classes}) => (
   <Tooltip
     placement="top"
     title={(
@@ -36,16 +42,20 @@ const StatusDot = ({status, multilineDots, columnName}) => (
         <div>{_.get(columnConfig, [columnName, "dotExplanation"])(status)}</div>
         <div>Uptime: {status.uptime} ({status.uptimeSec}s)</div>
       </div>
-    )}
-    overlayStyle={{ fontSize: "12px" }}>
+    )}>
     <div
-      className={`status-dot status-dot-${status.value} ${multilineDots ? 'dot-multiline': ''}`}
+      className={classNames(
+        "status-table-dot",
+        classes[status.value],
+        { "dot-multiline": multilineDots }
+      )}
       key={status.name}>&nbsp;
     </div>
   </Tooltip>
 );
 
 StatusDot.propTypes = {
+  classes: PropTypes.shape({}).isRequired,
   columnName: PropTypes.string.isRequired,
   multilineDots: PropTypes.bool.isRequired,
   status: PropTypes.shape({
@@ -57,27 +67,27 @@ StatusDot.propTypes = {
 const columns = {
   resourceName: {
     title: "Deployment",
-    dataIndex: "name",
-    key: "name"
+    dataIndex: "name"
   },
   pods: {
     title: "Pods",
-    dataIndex: "numEntities"
+    dataIndex: "numEntities",
+    isNumeric: true
   },
-  status: name => {
+  status: (name, classes) => {
     return {
       title: name,
-      dataIndex: "pods",
-      width: columnConfig[name].width,
-      render: statuses => {
-        let multilineDots = _.size(statuses) > columnConfig[name].wrapDotsAt;
+      key: "status",
+      render: d => {
+        let multilineDots = _.size(d.pods) > columnConfig[name].wrapDotsAt;
 
-        return _.map(statuses, (status, i) => {
+        return _.map(d.pods, (status, i) => {
           return (
             <StatusDot
               status={status}
               multilineDots={multilineDots}
               columnName={name}
+              classes={classes}
               key={`${name}-pod-status-${i}`} />
           );
         });
@@ -88,6 +98,7 @@ const columns = {
 
 class StatusTable extends React.Component {
   static propTypes = {
+    classes: PropTypes.shape({}).isRequired,
     data: PropTypes.arrayOf(PropTypes.shape({
       name: PropTypes.string.isRequired,
       pods: PropTypes.arrayOf(PropTypes.object).isRequired, // TODO: What's the real shape here.
@@ -106,23 +117,22 @@ class StatusTable extends React.Component {
   }
 
   render() {
+    const { classes } = this.props;
     let tableCols = [
       columns.resourceName,
       columns.pods,
-      columns.status(this.props.statusColumnTitle)
+      columns.status(this.props.statusColumnTitle, classes)
     ];
     let tableData = this.getTableData();
 
     return (
-      <Table
-        dataSource={tableData}
-        columns={tableCols}
-        pagination={false}
-        className="metric-table"
-        rowKey={r => r.name}
-        size="middle" />
+      <BaseTable
+        tableRows={tableData}
+        tableColumns={tableCols}
+        tableClassName="metric-table"
+        rowKey={r => r.name} />
     );
   }
 }
 
-export default StatusTable;
+export default withStyles(styles, { withTheme: true })(StatusTable);

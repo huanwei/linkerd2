@@ -90,11 +90,16 @@ func (kubeAPI *KubernetesAPI) NamespaceExists(client *http.Client, namespace str
 	return rsp.StatusCode == http.StatusOK, nil
 }
 
-func (kubeAPI *KubernetesAPI) GetPodsForNamespace(client *http.Client, namespace string) ([]v1.Pod, error) {
+// GetPodsByNamespace returns all pods in a given namespace
+func (kubeAPI *KubernetesAPI) GetPodsByNamespace(client *http.Client, namespace string) ([]v1.Pod, error) {
+	return kubeAPI.getPods(client, "/api/v1/namespaces/"+namespace+"/pods")
+}
+
+func (kubeAPI *KubernetesAPI) getPods(client *http.Client, path string) ([]v1.Pod, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	rsp, err := kubeAPI.getRequest(ctx, client, "/api/v1/namespaces/"+namespace+"/pods")
+	rsp, err := kubeAPI.getRequest(ctx, client, path)
 	if err != nil {
 		return nil, err
 	}
@@ -139,8 +144,8 @@ func (kubeAPI *KubernetesAPI) getRequest(ctx context.Context, client *http.Clien
 
 // NewAPI validates a Kubernetes config and returns a client for accessing the
 // configured cluster
-func NewAPI(configPath string) (*KubernetesAPI, error) {
-	config, err := getConfig(configPath)
+func NewAPI(configPath, kubeContext string) (*KubernetesAPI, error) {
+	config, err := GetConfig(configPath, kubeContext)
 	if err != nil {
 		return nil, fmt.Errorf("error configuring Kubernetes API client: %v", err)
 	}

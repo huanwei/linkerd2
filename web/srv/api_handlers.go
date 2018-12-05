@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
@@ -81,12 +82,25 @@ func (h *handler) handleApiPods(w http.ResponseWriter, req *http.Request, p http
 	renderJsonPb(w, pods)
 }
 
+func (h *handler) handleApiServices(w http.ResponseWriter, req *http.Request, p httprouter.Params) {
+	services, err := h.apiClient.ListServices(req.Context(), &pb.ListServicesRequest{
+		Namespace: req.FormValue("namespace"),
+	})
+
+	if err != nil {
+		renderJsonError(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	renderJsonPb(w, services)
+}
+
 func (h *handler) handleApiStat(w http.ResponseWriter, req *http.Request, p httprouter.Params) {
 	allNs := false
 	if req.FormValue("all_namespaces") == "true" {
 		allNs = true
 	}
-	requestParams := util.StatSummaryRequestParams{
+	requestParams := util.StatsRequestParams{
 		TimeWindow:    req.FormValue("window"),
 		ResourceName:  req.FormValue("resource_name"),
 		ResourceType:  req.FormValue("resource_type"),
@@ -119,6 +133,38 @@ func (h *handler) handleApiStat(w http.ResponseWriter, req *http.Request, p http
 	renderJsonPb(w, result)
 }
 
+func (h *handler) handleApiTopRoutes(w http.ResponseWriter, req *http.Request, p httprouter.Params) {
+	requestParams := util.StatsRequestParams{
+		TimeWindow:    req.FormValue("window"),
+		ResourceName:  req.FormValue("resource_name"),
+		ResourceType:  k8s.Service,
+		Namespace:     req.FormValue("namespace"),
+		FromName:      req.FormValue("from_name"),
+		FromType:      req.FormValue("from_type"),
+		FromNamespace: req.FormValue("from_namespace"),
+	}
+
+	topReq, err := util.BuildTopRoutesRequest(requestParams)
+	if err != nil {
+		renderJsonError(w, err, http.StatusBadRequest)
+		return
+	}
+
+	result, err := h.apiClient.TopRoutes(req.Context(), topReq)
+	if err != nil {
+		renderJsonError(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	renderJsonPb(w, result)
+}
+
+func websocketError(ws *websocket.Conn, wsError int, msg string) {
+	ws.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(wsError, msg),
+		time.Time{})
+}
+
 func (h *handler) handleApiTap(w http.ResponseWriter, req *http.Request, p httprouter.Params) {
 	ws, err := websocketUpgrader.Upgrade(w, req, nil)
 	if err != nil {
@@ -129,54 +175,50 @@ func (h *handler) handleApiTap(w http.ResponseWriter, req *http.Request, p httpr
 
 	messageType, message, err := ws.ReadMessage()
 	if err != nil {
-		ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
+		websocketError(ws, websocket.CloseInternalServerErr, err.Error())
 		return
 	}
 
 	if messageType != websocket.TextMessage {
-		ws.WriteMessage(websocket.CloseMessage, []byte("MessageType not supported"))
+		websocketError(ws, websocket.CloseUnsupportedData, "MessageType not supported")
 		return
 	}
 
 	var requestParams util.TapRequestParams
 	err = json.Unmarshal(message, &requestParams)
 	if err != nil {
-		ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
+		websocketError(ws, websocket.CloseInternalServerErr, err.Error())
 		return
-	}
-
-	if requestParams.MaxRps == 0.0 {
-		requestParams.MaxRps = 1.0
 	}
 
 	tapReq, err := util.BuildTapByResourceRequest(requestParams)
 	if err != nil {
-		ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
+		websocketError(ws, websocket.CloseInternalServerErr, err.Error())
 		return
 	}
-
-	tapClient, err := h.apiClient.TapByResource(req.Context(), tapReq)
-	if err != nil {
-		ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
-		return
-	}
-	defer tapClient.CloseSend()
 
 	go func() {
+		tapClient, err := h.apiClient.TapByResource(req.Context(), tapReq)
+		if err != nil {
+			websocketError(ws, websocket.CloseInternalServerErr, err.Error())
+			return
+		}
+		defer tapClient.CloseSend()
+
 		for {
 			rsp, err := tapClient.Recv()
 			if err == io.EOF {
 				break
 			}
 			if err != nil {
-				ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
+				websocketError(ws, websocket.CloseInternalServerErr, err.Error())
 				break
 			}
 
 			buf := new(bytes.Buffer)
 			err = pbMarshaler.Marshal(buf, rsp)
 			if err != nil {
-				ws.WriteMessage(websocket.CloseMessage, []byte(err.Error()))
+				websocketError(ws, websocket.CloseInternalServerErr, err.Error())
 				break
 			}
 
@@ -192,6 +234,7 @@ func (h *handler) handleApiTap(w http.ResponseWriter, req *http.Request, p httpr
 	for {
 		_, _, err := ws.ReadMessage()
 		if err != nil {
+			log.Debugf("Received close frame: %v", err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure) {
 				log.Errorf("Unexpected close error: %s", err)
 			}

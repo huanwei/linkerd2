@@ -37,7 +37,7 @@ type (
 		Contents interface{}
 	}
 	appParams struct {
-		Data                *pb.VersionInfo
+		Data                pb.VersionInfo
 		UUID                string
 		ControllerNamespace string
 		Error               bool
@@ -83,6 +83,7 @@ func NewServer(addr, templateDir, staticDir, uuid, controllerNamespace, webpackD
 
 	// webapp routes
 	server.router.GET("/", handler.handleIndex)
+	server.router.GET("/overview", handler.handleIndex)
 	server.router.GET("/servicemesh", handler.handleIndex)
 	server.router.GET("/namespaces", handler.handleIndex)
 	server.router.GET("/namespaces/:namespace", handler.handleIndex)
@@ -95,15 +96,22 @@ func NewServer(addr, templateDir, staticDir, uuid, controllerNamespace, webpackD
 	server.router.GET("/namespaces/:namespace/replicationcontrollers/:replicationcontroller", handler.handleIndex)
 	server.router.GET("/tap", handler.handleIndex)
 	server.router.GET("/top", handler.handleIndex)
+	server.router.GET("/routes", handler.handleIndex)
+	server.router.GET("/profiles/new", handler.handleProfileDownload)
 	server.router.ServeFiles(
 		"/dist/*filepath", // add catch-all parameter to match all files in dir
 		filesonly.FileSystem(server.staticDir))
 
 	// webapp api routes
 	server.router.GET("/api/version", handler.handleApiVersion)
+	// Traffic Performance Summary.  This route used to be called /api/stat
+	// but was renamed to avoid triggering ad blockers.
+	// See: https://github.com/linkerd/linkerd2/issues/970
 	server.router.GET("/api/tps-reports", handler.handleApiStat)
 	server.router.GET("/api/pods", handler.handleApiPods)
+	server.router.GET("/api/services", handler.handleApiServices)
 	server.router.GET("/api/tap", handler.handleApiTap)
+	server.router.GET("/api/routes", handler.handleApiTopRoutes)
 
 	return httpServer
 }

@@ -9,6 +9,7 @@ import (
 	pb "github.com/linkerd/linkerd2/controller/gen/public"
 	"github.com/linkerd/linkerd2/pkg/addr"
 	"github.com/linkerd/linkerd2/pkg/k8s"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/api/core/v1"
@@ -28,18 +29,18 @@ var (
 	// target resource on an outbound 'to' query
 	// destination resource on an outbound 'from' query
 	ValidTargets = []string{
+		k8s.Authority,
 		k8s.Deployment,
 		k8s.Namespace,
 		k8s.Pod,
 		k8s.ReplicationController,
-		k8s.Authority,
 	}
 
-	// ValidDestinations specifies resource types allowed as a destination:
+	// ValidTapDestinations specifies resource types allowed as a tap destination:
 	// destination resource on an outbound 'to' query
-	// target resource on an outbound 'from' query
-	ValidDestinations = []string{
+	ValidTapDestinations = []string{
 		k8s.Deployment,
+		k8s.Job,
 		k8s.Namespace,
 		k8s.Pod,
 		k8s.ReplicationController,
@@ -47,7 +48,9 @@ var (
 	}
 )
 
-type StatSummaryRequestParams struct {
+// Parameters that are used to build requests for metrics data.  This includes
+// requests to StatSummary and TopRoutes
+type StatsRequestParams struct {
 	TimeWindow    string
 	Namespace     string
 	ResourceType  string
@@ -105,7 +108,7 @@ func GRPCError(err error) error {
 	return err
 }
 
-func BuildStatSummaryRequest(p StatSummaryRequestParams) (*pb.StatSummaryRequest, error) {
+func BuildStatSummaryRequest(p StatsRequestParams) (*pb.StatSummaryRequest, error) {
 	window := defaultMetricTimeWindow
 	if p.TimeWindow != "" {
 		_, err := time.ParseDuration(p.TimeWindow)
@@ -191,6 +194,76 @@ func BuildStatSummaryRequest(p StatSummaryRequestParams) (*pb.StatSummaryRequest
 	return statRequest, nil
 }
 
+func BuildTopRoutesRequest(p StatsRequestParams) (*pb.TopRoutesRequest, error) {
+	window := defaultMetricTimeWindow
+	if p.TimeWindow != "" {
+		_, err := time.ParseDuration(p.TimeWindow)
+		if err != nil {
+			return nil, err
+		}
+		window = p.TimeWindow
+	}
+
+	if p.AllNamespaces {
+		return nil, errors.New("all namespaces is not supported for routes request")
+	}
+
+	targetNamespace := p.Namespace
+	if p.AllNamespaces {
+		targetNamespace = ""
+	} else if p.Namespace == "" {
+		targetNamespace = v1.NamespaceDefault
+	}
+
+	resourceType, err := k8s.CanonicalResourceNameFromFriendlyName(p.ResourceType)
+	if err != nil {
+		return nil, err
+	}
+	if resourceType != k8s.Service {
+		return nil, errors.New("routes request must target a service")
+	}
+
+	topRoutesRequest := &pb.TopRoutesRequest{
+		Selector: &pb.ResourceSelection{
+			Resource: &pb.Resource{
+				Namespace: targetNamespace,
+				Name:      p.ResourceName,
+				Type:      resourceType,
+			},
+		},
+		TimeWindow: window,
+	}
+
+	if p.ToName != "" || p.ToType != "" || p.ToNamespace != "" {
+		return nil, errors.New("to options are not supported for routes request")
+	}
+
+	if p.FromName != "" || p.FromType != "" || p.FromNamespace != "" {
+		if p.FromNamespace == "" {
+			p.FromNamespace = targetNamespace
+		}
+		if p.FromType == "" {
+			p.FromType = resourceType
+		}
+
+		fromType, err := validateFromResourceType(p.FromType)
+		if err != nil {
+			return nil, err
+		}
+
+		fromResource := pb.TopRoutesRequest_FromResource{
+			FromResource: &pb.Resource{
+				Namespace: p.FromNamespace,
+				Type:      fromType,
+				Name:      p.FromName,
+			},
+		}
+		topRoutesRequest.Outbound = &fromResource
+	}
+
+	return topRoutesRequest, nil
+}
+
 // An authority can only receive traffic, not send it, so it can't be a --from
 func validateFromResourceType(resourceType string) (string, error) {
 	name, err := k8s.CanonicalResourceNameFromFriendlyName(resourceType)
@@ -205,27 +278,82 @@ func validateFromResourceType(resourceType string) (string, error) {
 
 // BuildResource parses input strings, typically from CLI flags, to build a
 // Resource object for use in the protobuf API.
-func BuildResource(namespace string, args ...string) (pb.Resource, error) {
+// It's the same as BuildResources but only admits one arg and only returns one resource
+func BuildResource(namespace, arg string) (pb.Resource, error) {
+	res, err := BuildResources(namespace, []string{arg})
+	if err != nil {
+		return pb.Resource{}, err
+	}
+
+	return res[0], err
+}
+
+// BuildResources parses input strings, typically from CLI flags, to build a
+// slice of Resource objects for use in the protobuf API.
+// It's the same as BuildResource but it admits any number of args and returns multiple resources
+func BuildResources(namespace string, args []string) ([]pb.Resource, error) {
 	switch len(args) {
 	case 0:
-		return pb.Resource{}, errors.New("No resource arguments provided")
+		return nil, errors.New("No resource arguments provided")
 	case 1:
-		elems := strings.Split(args[0], "/")
-		switch len(elems) {
-		case 1:
-			// --namespace my-ns deploy
-			return buildResource(namespace, elems[0], "")
-		case 2:
-			// --namespace my-ns deploy/foo
-			return buildResource(namespace, elems[0], elems[1])
-		default:
-			return pb.Resource{}, errors.New("Invalid resource string: " + args[0])
-		}
-	case 2:
-		// --namespace my-ns deploy foo
-		return buildResource(namespace, args[0], args[1])
+		return parseResources(namespace, "", args)
 	default:
-		return pb.Resource{}, errors.New("Too many arguments provided for resource: " + strings.Join(args, "/"))
+		if res, err := k8s.CanonicalResourceNameFromFriendlyName(args[0]); err == nil && res != k8s.All {
+			// --namespace my-ns deploy foo1 foo2 ...
+			return parseResources(namespace, args[0], args[1:])
+		} else {
+			return parseResources(namespace, "", args)
+		}
+	}
+}
+
+func parseResources(namespace string, resType string, args []string) ([]pb.Resource, error) {
+	if err := validateResources(resType, args); err != nil {
+		return nil, err
+	}
+	resources := make([]pb.Resource, 0)
+	for _, arg := range args {
+		res, err := parseResource(namespace, resType, arg)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, res)
+	}
+	return resources, nil
+}
+
+func validateResources(resType string, args []string) error {
+	set := make(map[string]bool)
+	all := false
+	for _, arg := range args {
+		set[arg] = true
+		if arg == k8s.All {
+			all = true
+		}
+	}
+	if len(set) < len(args) {
+		return errors.New("cannot supply duplicate resources")
+	}
+	if all && len(args) > 1 {
+		return errors.New("'all' can't be supplied alongside other resources")
+	}
+	return nil
+}
+
+func parseResource(namespace, resType string, arg string) (pb.Resource, error) {
+	if resType != "" {
+		return buildResource(namespace, resType, arg)
+	}
+	elems := strings.Split(arg, "/")
+	switch len(elems) {
+	case 1:
+		// --namespace my-ns deploy
+		return buildResource(namespace, elems[0], "")
+	case 2:
+		// --namespace my-ns deploy/foo
+		return buildResource(namespace, elems[0], elems[1])
+	default:
+		return pb.Resource{}, errors.New("Invalid resource string: " + arg)
 	}
 }
 
@@ -262,8 +390,8 @@ func BuildTapByResourceRequest(params TapRequestParams) (*pb.TapByResourceReques
 		if err != nil {
 			return nil, fmt.Errorf("destination resource invalid: %s", err)
 		}
-		if !contains(ValidDestinations, destination.Type) {
-			return nil, fmt.Errorf("unsupported resource type [%s]", target.Type)
+		if !contains(ValidTapDestinations, destination.Type) {
+			return nil, fmt.Errorf("unsupported resource type [%s]", destination.Type)
 		}
 
 		match := pb.TapByResourceRequest_Match{
@@ -400,6 +528,15 @@ func (p *peer) tlsStatus() string {
 	return p.labels["tls"]
 }
 
+func routeLabels(event *pb.TapEvent) string {
+	out := ""
+	for key, val := range event.GetRouteMeta().GetLabels() {
+		out = fmt.Sprintf("%s rt_%s=%s", out, key, val)
+	}
+
+	return out
+}
+
 func RenderTapEvent(event *pb.TapEvent, resource string) string {
 	dst := dst(event)
 	src := src(event)
@@ -424,12 +561,14 @@ func RenderTapEvent(event *pb.TapEvent, resource string) string {
 		tls,
 	)
 
+	// If `resource` is non-empty, then
 	resources := ""
 	if resource != "" {
 		resources = fmt.Sprintf(
-			"%s%s",
+			"%s%s%s",
 			src.formatResource(resource),
 			dst.formatResource(resource),
+			routeLabels(event),
 		)
 	}
 
@@ -495,4 +634,33 @@ func RenderTapEvent(event *pb.TapEvent, resource string) string {
 	default:
 		return fmt.Sprintf("unknown %s", flow)
 	}
+}
+
+func GetRequestRate(stats *pb.BasicStats, timeWindow string) float64 {
+	success := stats.SuccessCount
+	failure := stats.FailureCount
+	windowLength, err := time.ParseDuration(timeWindow)
+	if err != nil {
+		log.Error(err.Error())
+		return 0.0
+	}
+	return float64(success+failure) / windowLength.Seconds()
+}
+
+func GetSuccessRate(stats *pb.BasicStats) float64 {
+	success := stats.SuccessCount
+	failure := stats.FailureCount
+
+	if success+failure == 0 {
+		return 0.0
+	}
+	return float64(success) / float64(success+failure)
+}
+
+func GetPercentTls(stats *pb.BasicStats) float64 {
+	reqTotal := stats.SuccessCount + stats.FailureCount
+	if reqTotal == 0 {
+		return 0.0
+	}
+	return float64(stats.TlsRequestCount) / float64(reqTotal)
 }

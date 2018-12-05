@@ -1,16 +1,20 @@
-import _ from 'lodash';
+import 'whatwg-fetch';
+
+import { emptyMetric, processSingleResourceRollup } from './util/MetricUtils.jsx';
+import { resourceTypeToCamelCase, singularResource } from './util/Utils.js';
+
+import AddResources from './AddResources.jsx';
 import ErrorBanner from './ErrorBanner.jsx';
 import MetricsTable from './MetricsTable.jsx';
 import Octopus from './Octopus.jsx';
-import PageHeader from './PageHeader.jsx';
-import { processSingleResourceRollup } from './util/MetricUtils.js';
 import PropTypes from 'prop-types';
 import React from 'react';
-import { Spin } from 'antd';
+import Spinner from './util/Spinner.jsx';
 import TopModule from './TopModule.jsx';
+import Typography from '@material-ui/core/Typography';
+import _ from 'lodash';
+import { processNeighborData } from './util/TapUtils.jsx';
 import { withContext } from './util/AppContext.jsx';
-import { resourceTypeToCamelCase, singularResource } from './util/Utils.js';
-import 'whatwg-fetch';
 
 const getResourceFromUrl = (match, pathPrefix) => {
   let resource = {
@@ -33,13 +37,16 @@ export class ResourceDetailBase extends React.Component {
     api: PropTypes.shape({
       PrefixedLink: PropTypes.func.isRequired,
     }).isRequired,
-    match: PropTypes.shape({}).isRequired,
+    match: PropTypes.shape({
+      url: PropTypes.string.isRequired
+    }).isRequired,
     pathPrefix: PropTypes.string.isRequired
   }
 
   constructor(props) {
     super(props);
     this.api = this.props.api;
+    this.unmeshedSources = {};
     this.handleApiError = this.handleApiError.bind(this);
     this.loadFromServer = this.loadFromServer.bind(this);
     this.state = this.getInitialState(props.match, props.pathPrefix);
@@ -59,6 +66,8 @@ export class ResourceDetailBase extends React.Component {
         upstream: {},
         downstream: {}
       },
+      unmeshedSources: {},
+      resourceIsMeshed: true,
       pendingRequests: false,
       loaded: false,
       error: null
@@ -70,10 +79,13 @@ export class ResourceDetailBase extends React.Component {
     this.timerId = window.setInterval(this.loadFromServer, this.state.pollingInterval);
   }
 
-  componentWillReceiveProps(newProps) {
-    // React won't unmount this component when switching resource pages so we need to clear state
-    this.api.cancelCurrentRequests();
-    this.setState(this.getInitialState(newProps.match, newProps.pathPrefix));
+  componentDidUpdate(prevProps) {
+    if (!_.isEqual(prevProps.match.url, this.props.match.url)) {
+      // React won't unmount this component when switching resource pages so we need to clear state
+      this.api.cancelCurrentRequests();
+      this.unmeshedSources = {};
+      this.setState(this.getInitialState(this.props.match, this.props.pathPrefix));
+    }
   }
 
   componentWillUnmount() {
@@ -130,9 +142,14 @@ export class ResourceDetailBase extends React.Component {
         }, {});
 
         let podMetricsForResource = _.filter(podMetrics, pod => podBelongsToResource[pod.namespace + "/" + pod.name]);
+        let resourceIsMeshed = true;
+        if (!_.isEmpty(this.state.resourceMetrics)) {
+          resourceIsMeshed = _.get(this.state.resourceMetrics, '[0].pods.meshedPods') > 0;
+        }
 
         this.setState({
           resourceMetrics,
+          resourceIsMeshed,
           podMetrics: podMetricsForResource,
           neighborMetrics: {
             upstream: upstreamMetrics,
@@ -140,7 +157,8 @@ export class ResourceDetailBase extends React.Component {
           },
           loaded: true,
           pendingRequests: false,
-          error: null
+          error: null,
+          unmeshedSources: this.unmeshedSources // in place of debouncing, just update this when we update the rest of the state
         });
       })
       .catch(this.handleApiError);
@@ -158,6 +176,12 @@ export class ResourceDetailBase extends React.Component {
     });
   }
 
+  updateNeighborsFromTapData = (source, sourceLabels) => {
+    // store this outside of state, as updating the state upon every websocket event received
+    // is very costly and causes the page to freeze up
+    this.unmeshedSources = processNeighborData(source, sourceLabels, this.unmeshedSources, this.state.resource.type);
+  }
+
   banner = () => {
     if (!this.state.error) {
       return;
@@ -168,45 +192,71 @@ export class ResourceDetailBase extends React.Component {
 
   content = () => {
     if (!this.state.loaded && !this.state.error) {
-      return <Spin size="large" />;
+      return <Spinner />;
     }
 
     let topQuery = {
       resource: this.state.resourceType + "/" + this.state.resourceName,
-      namespace: this.state.namespace,
-      maxRps: "1.0"
+      namespace: this.state.namespace
     };
+
+    let unmeshed = _.chain(this.state.unmeshedSources)
+      .filter(['type', this.state.resourceType])
+      .map(d => _.merge({}, emptyMetric, d, {
+        unmeshed: true,
+        pods: {
+          totalPods: _.size(d.pods),
+          meshedPods: 0
+        }
+      }))
+      .value();
+
+    let upstreams = _.concat(this.state.neighborMetrics.upstream, unmeshed);
 
     return (
       <div>
+        {
+          this.state.resourceIsMeshed ? null :
+          <div className="page-section">
+            <AddResources
+              resourceName={this.state.resourceName}
+              resourceType={this.state.resourceType} />
+          </div>
+        }
+
         <div className="page-section">
           <Octopus
             resource={this.state.resourceMetrics[0]}
             neighbors={this.state.neighborMetrics}
+            unmeshedSources={_.values(this.state.unmeshedSources)}
             api={this.api} />
         </div>
 
-        <div className="page-section">
-          <TopModule
-            pathPrefix={this.props.pathPrefix}
-            query={topQuery}
-            startTap={true}
-            maxRowsToDisplay={10} />
-        </div>
-
-        { _.isEmpty(this.state.neighborMetrics.upstream) ? null : (
+        {
+          !this.state.resourceIsMeshed ? null :
           <div className="page-section">
-            <h2 className="subsection-header">Upstreams</h2>
+            <TopModule
+              pathPrefix={this.props.pathPrefix}
+              query={topQuery}
+              startTap={true}
+              updateNeighbors={this.updateNeighborsFromTapData}
+              maxRowsToDisplay={10} />
+          </div>
+        }
+
+        { _.isEmpty(upstreams) ? null : (
+          <div className="page-section">
+            <Typography variant="h5">Inbound</Typography>
             <MetricsTable
               resource={this.state.resource.type}
-              metrics={this.state.neighborMetrics.upstream} />
+              metrics={upstreams} />
           </div>
           )
         }
 
         { _.isEmpty(this.state.neighborMetrics.downstream) ? null : (
           <div className="page-section">
-            <h2 className="subsection-header">Downstreams</h2>
+            <Typography variant="h5">Outbound</Typography>
             <MetricsTable
               resource={this.state.resource.type}
               metrics={this.state.neighborMetrics.downstream} />
@@ -217,7 +267,7 @@ export class ResourceDetailBase extends React.Component {
         {
           this.state.resource.type === "pod" ? null : (
             <div className="page-section">
-              <h2 className="subsection-header">Pods</h2>
+              <Typography variant="h5">Pods</Typography>
               <MetricsTable
                 resource="pod"
                 metrics={this.state.podMetrics} />
@@ -229,20 +279,11 @@ export class ResourceDetailBase extends React.Component {
   }
 
   render() {
-    let resourceBreadcrumb = (
-      <React.Fragment>
-        <this.api.PrefixedLink to={"/namespaces/" + this.state.namespace}>
-          {this.state.namespace}
-        </this.api.PrefixedLink> &gt; {`${this.state.resource.type}/${this.state.resource.name}`}
-      </React.Fragment>
-    );
 
     return (
       <div className="page-content">
         <div>
           {this.banner()}
-          {resourceBreadcrumb}
-          <PageHeader header={`${this.state.resource.type}/${this.state.resource.name}`} />
           {this.content()}
         </div>
       </div>

@@ -21,7 +21,7 @@ func TestTapByResource(t *testing.T) {
 	t.Run("Returns expected response", func(t *testing.T) {
 		expectations := []tapExpected{
 			tapExpected{
-				msg:    "rpc error: code = InvalidArgument desc = TapByResource received nil target ResourceSelection: {Target:<nil> Match:<nil> MaxRps:0}",
+				msg:    "rpc error: code = InvalidArgument desc = TapByResource received nil target ResourceSelection",
 				k8sRes: []string{},
 				req:    public.TapByResourceRequest{},
 			},
@@ -35,6 +35,7 @@ metadata:
   namespace: emojivoto
   labels:
     app: emoji-svc
+    linkerd.io/control-plane-ns: controller-ns
   annotations:
     linkerd.io/proxy-version: testinjectversion
 status:
@@ -52,6 +53,30 @@ status:
 					Match: &public.TapByResourceRequest_Match{
 						Match: &public.TapByResourceRequest_Match_Any{
 							Any: &public.TapByResourceRequest_Match_Seq{},
+						},
+					},
+				},
+			},
+			tapExpected{
+				msg: "rpc error: code = NotFound desc = no pods found for pod/emojivoto-not-meshed",
+				k8sRes: []string{`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emojivoto-not-meshed
+  namespace: emojivoto
+  labels:
+    app: emoji-svc
+status:
+  phase: Running
+`,
+				},
+				req: public.TapByResourceRequest{
+					Target: &public.ResourceSelection{
+						Resource: &public.Resource{
+							Namespace: "emojivoto",
+							Type:      pkgK8s.Pod,
+							Name:      "emojivoto-not-meshed",
 						},
 					},
 				},
@@ -96,7 +121,7 @@ status:
 				},
 			},
 			tapExpected{
-				msg: "rpc error: code = NotFound desc = no pods found for ResourceSelection: {Resource:namespace:\"emojivoto\" type:\"pod\" name:\"emojivoto-meshed\"  LabelSelector:}",
+				msg: "rpc error: code = NotFound desc = no pods found for pod/emojivoto-meshed",
 				k8sRes: []string{`
 apiVersion: v1
 kind: Pod
@@ -134,6 +159,7 @@ metadata:
   namespace: emojivoto
   labels:
     app: emoji-svc
+    linkerd.io/control-plane-ns: controller-ns
   annotations:
     linkerd.io/proxy-version: testinjectversion
 status:
@@ -158,12 +184,12 @@ status:
 		}
 
 		for _, exp := range expectations {
-			k8sAPI, err := k8s.NewFakeAPI(exp.k8sRes...)
+			k8sAPI, err := k8s.NewFakeAPI("", exp.k8sRes...)
 			if err != nil {
 				t.Fatalf("NewFakeAPI returned an error: %s", err)
 			}
 
-			server, listener, err := NewServer("localhost:0", 0, k8sAPI)
+			server, listener, err := NewServer("localhost:0", 0, "controller-ns", k8sAPI)
 			if err != nil {
 				t.Fatalf("NewServer error: %s", err)
 			}
@@ -184,12 +210,12 @@ status:
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 
-			tapClient, err := client.TapByResource(ctx, &exp.req)
+			tapByResourceClient, err := client.TapByResource(ctx, &exp.req)
 			if err != nil {
 				t.Fatalf("TapByResource failed: %v", err)
 			}
 
-			_, err = tapClient.Recv()
+			_, err = tapByResourceClient.Recv()
 			if err.Error() != exp.msg && (!exp.eofOk || err.Error() != "EOF") {
 				t.Fatalf("Expected error to be [%s], but was [%s]. eofOk: %v", exp.msg, err, exp.eofOk)
 			}

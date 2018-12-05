@@ -6,9 +6,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/linkerd/linkerd2/controller/api/public"
 	healthcheckPb "github.com/linkerd/linkerd2/controller/gen/common/healthcheck"
+	pb "github.com/linkerd/linkerd2/controller/gen/public"
 	"k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -22,6 +24,7 @@ func TestHealthChecker(t *testing.T) {
 		check: func() error {
 			return nil
 		},
+		retryDeadline: time.Time{},
 	}
 
 	passingCheck2 := &checker{
@@ -30,6 +33,7 @@ func TestHealthChecker(t *testing.T) {
 		check: func() error {
 			return nil
 		},
+		retryDeadline: time.Time{},
 	}
 
 	failingCheck := &checker{
@@ -38,6 +42,7 @@ func TestHealthChecker(t *testing.T) {
 		check: func() error {
 			return fmt.Errorf("error")
 		},
+		retryDeadline: time.Time{},
 	}
 
 	passingRPCClient := public.MockApiClient{
@@ -59,6 +64,7 @@ func TestHealthChecker(t *testing.T) {
 			return passingRPCClient.SelfCheck(context.Background(),
 				&healthcheckPb.SelfCheckRequest{})
 		},
+		retryDeadline: time.Time{},
 	}
 
 	failingRPCClient := public.MockApiClient{
@@ -81,6 +87,7 @@ func TestHealthChecker(t *testing.T) {
 			return failingRPCClient.SelfCheck(context.Background(),
 				&healthcheckPb.SelfCheckRequest{})
 		},
+		retryDeadline: time.Time{},
 	}
 
 	fatalCheck := &checker{
@@ -90,6 +97,7 @@ func TestHealthChecker(t *testing.T) {
 		check: func() error {
 			return fmt.Errorf("fatal")
 		},
+		retryDeadline: time.Time{},
 	}
 
 	t.Run("Notifies observer of all results", func(t *testing.T) {
@@ -212,9 +220,9 @@ func TestHealthChecker(t *testing.T) {
 		returnError := true
 
 		retryCheck := &checker{
-			category:    "cat7",
-			description: "desc7",
-			retry:       true,
+			category:      "cat7",
+			description:   "desc7",
+			retryDeadline: time.Now().Add(100 * time.Second),
 			check: func() error {
 				if returnError {
 					returnError = false
@@ -254,7 +262,7 @@ func TestHealthChecker(t *testing.T) {
 	})
 }
 
-func TestValidatePods(t *testing.T) {
+func TestValidateControlPlanePods(t *testing.T) {
 	pod := func(name string, phase v1.PodPhase, ready bool) v1.Pod {
 		return v1.Pod{
 			ObjectMeta: meta.ObjectMeta{Name: name},
@@ -262,7 +270,7 @@ func TestValidatePods(t *testing.T) {
 				Phase: phase,
 				ContainerStatuses: []v1.ContainerStatus{
 					v1.ContainerStatus{
-						Name:  strings.Split(name, "-")[0],
+						Name:  strings.Split(name, "-")[1],
 						Ready: ready,
 					},
 				},
@@ -272,49 +280,146 @@ func TestValidatePods(t *testing.T) {
 
 	t.Run("Returns an error if not all pods are running", func(t *testing.T) {
 		pods := []v1.Pod{
-			pod("controller-6f78cbd47-bc557", v1.PodRunning, true),
-			pod("grafana-5b7d796646-hh46d", v1.PodRunning, true),
-			pod("prometheus-74d6879cd6-bbdk6", v1.PodFailed, false),
-			pod("web-98c9ddbcd-7b5lh", v1.PodRunning, true),
+			pod("linkerd-controller-6f78cbd47-bc557", v1.PodRunning, true),
+			pod("linkerd-grafana-5b7d796646-hh46d", v1.PodRunning, true),
+			pod("linkerd-prometheus-74d6879cd6-bbdk6", v1.PodFailed, false),
+			pod("linkerd-web-98c9ddbcd-7b5lh", v1.PodRunning, true),
 		}
 
-		err := validatePods(pods)
+		err := validateControlPlanePods(pods)
 		if err == nil {
 			t.Fatal("Expected error, got nothing")
 		}
-		if err.Error() != "No running pods for prometheus" {
+		if err.Error() != "No running pods for \"linkerd-prometheus\"" {
 			t.Fatalf("Unexpected error message: %s", err.Error())
 		}
 	})
 
 	t.Run("Returns an error if not all containers are ready", func(t *testing.T) {
 		pods := []v1.Pod{
-			pod("controller-6f78cbd47-bc557", v1.PodRunning, true),
-			pod("grafana-5b7d796646-hh46d", v1.PodRunning, false),
-			pod("prometheus-74d6879cd6-bbdk6", v1.PodRunning, true),
-			pod("web-98c9ddbcd-7b5lh", v1.PodRunning, true),
+			pod("linkerd-controller-6f78cbd47-bc557", v1.PodRunning, true),
+			pod("linkerd-grafana-5b7d796646-hh46d", v1.PodRunning, false),
+			pod("linkerd-prometheus-74d6879cd6-bbdk6", v1.PodRunning, true),
+			pod("linkerd-web-98c9ddbcd-7b5lh", v1.PodRunning, true),
 		}
 
-		err := validatePods(pods)
+		err := validateControlPlanePods(pods)
 		if err == nil {
 			t.Fatal("Expected error, got nothing")
 		}
-		if err.Error() != "The grafana pod's grafana container is not ready" {
+		if err.Error() != "The \"linkerd-grafana\" pod's \"grafana\" container is not ready" {
 			t.Fatalf("Unexpected error message: %s", err.Error())
 		}
 	})
 
 	t.Run("Returns nil if all pods are running and all containers are ready", func(t *testing.T) {
 		pods := []v1.Pod{
-			pod("controller-6f78cbd47-bc557", v1.PodRunning, true),
-			pod("grafana-5b7d796646-hh46d", v1.PodRunning, true),
-			pod("prometheus-74d6879cd6-bbdk6", v1.PodRunning, true),
-			pod("web-98c9ddbcd-7b5lh", v1.PodRunning, true),
+			pod("linkerd-controller-6f78cbd47-bc557", v1.PodRunning, true),
+			pod("linkerd-grafana-5b7d796646-hh46d", v1.PodRunning, true),
+			pod("linkerd-prometheus-74d6879cd6-bbdk6", v1.PodRunning, true),
+			pod("linkerd-web-98c9ddbcd-7b5lh", v1.PodRunning, true),
 		}
 
-		err := validatePods(pods)
+		err := validateControlPlanePods(pods)
 		if err != nil {
 			t.Fatalf("Unexpected error: %s", err)
+		}
+	})
+}
+
+func TestValidateDataPlanePods(t *testing.T) {
+
+	t.Run("Returns an error if no inject pods were found", func(t *testing.T) {
+		err := validateDataPlanePods([]*pb.Pod{}, "emojivoto")
+		if err == nil {
+			t.Fatal("Expected error, got nothing")
+		}
+		if err.Error() != "No \"linkerd-proxy\" containers found in the \"emojivoto\" namespace" {
+			t.Fatalf("Unexpected error message: %s", err.Error())
+		}
+	})
+
+	t.Run("Returns an error if not all pods are running", func(t *testing.T) {
+		pods := []*pb.Pod{
+			&pb.Pod{Name: "emoji-d9c7866bb-7v74n", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "vote-bot-644b8cb6b4-g8nlr", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "voting-65b9fffd77-rlwsd", Status: "Failed", ProxyReady: false},
+			&pb.Pod{Name: "web-6cfbccc48-5g8px", Status: "Running", ProxyReady: true},
+		}
+
+		err := validateDataPlanePods(pods, "emojivoto")
+		if err == nil {
+			t.Fatal("Expected error, got nothing")
+		}
+		if err.Error() != "The \"voting-65b9fffd77-rlwsd\" pod is not running" {
+			t.Fatalf("Unexpected error message: %s", err.Error())
+		}
+	})
+
+	t.Run("Returns an error if the proxy container is not ready", func(t *testing.T) {
+		pods := []*pb.Pod{
+			&pb.Pod{Name: "emoji-d9c7866bb-7v74n", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "vote-bot-644b8cb6b4-g8nlr", Status: "Running", ProxyReady: false},
+			&pb.Pod{Name: "voting-65b9fffd77-rlwsd", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "web-6cfbccc48-5g8px", Status: "Running", ProxyReady: true},
+		}
+
+		err := validateDataPlanePods(pods, "emojivoto")
+		if err == nil {
+			t.Fatal("Expected error, got nothing")
+		}
+		if err.Error() != "The \"linkerd-proxy\" container in the \"vote-bot-644b8cb6b4-g8nlr\" pod is not ready" {
+			t.Fatalf("Unexpected error message: %s", err.Error())
+		}
+	})
+
+	t.Run("Returns nil if all pods are running and all proxy containers are ready", func(t *testing.T) {
+		pods := []*pb.Pod{
+			&pb.Pod{Name: "emoji-d9c7866bb-7v74n", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "vote-bot-644b8cb6b4-g8nlr", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "voting-65b9fffd77-rlwsd", Status: "Running", ProxyReady: true},
+			&pb.Pod{Name: "web-6cfbccc48-5g8px", Status: "Running", ProxyReady: true},
+		}
+
+		err := validateDataPlanePods(pods, "emojivoto")
+		if err != nil {
+			t.Fatalf("Unexpected error: %s", err)
+		}
+	})
+}
+
+func TestValidateDataPlanePodReporting(t *testing.T) {
+	t.Run("Returns success if no pods present", func(t *testing.T) {
+		err := validateDataPlanePodReporting([]*pb.Pod{})
+		if err != nil {
+			t.Fatalf("Unexpected error message: %s", err.Error())
+		}
+	})
+
+	t.Run("Returns success if all pods are added", func(t *testing.T) {
+		pods := []*pb.Pod{
+			&pb.Pod{Name: "ns1/test1", Added: true},
+			&pb.Pod{Name: "ns2/test2", Added: true},
+		}
+
+		err := validateDataPlanePodReporting(pods)
+		if err != nil {
+			t.Fatalf("Unexpected error message: %s", err.Error())
+		}
+	})
+
+	t.Run("Returns an error if any of the pod was not added to Prometheus", func(t *testing.T) {
+		pods := []*pb.Pod{
+			&pb.Pod{Name: "ns1/test1", Added: true},
+			&pb.Pod{Name: "ns2/test2", Added: false},
+		}
+
+		err := validateDataPlanePodReporting(pods)
+		if err == nil {
+			t.Fatal("Expected error, got nothing")
+		}
+		if err.Error() != "Data plane metrics not found for ns2/test2." {
+			t.Fatalf("Unexpected error message: %s", err.Error())
 		}
 	})
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/linkerd/linkerd2/controller/api/util"
 	pb "github.com/linkerd/linkerd2/controller/gen/public"
@@ -31,7 +32,7 @@ func newTapOptions() *tapOptions {
 		namespace:   "default",
 		toResource:  "",
 		toNamespace: "",
-		maxRps:      1.0,
+		maxRps:      100.0,
 		scheme:      "",
 		method:      "",
 		authority:   "",
@@ -58,12 +59,12 @@ func newCmdTap() *cobra.Command {
   * ns/my-ns
 
   Valid resource types include:
-
   * deployments
   * namespaces
   * pods
   * replicationcontrollers
-  * services (only supported as a "--to" resource)`,
+  * services (only supported as a --to resource)
+  * jobs (only supported as a --to resource)`,
 		Example: `  # tap the web deployment in the default namespace
   linkerd tap deploy/web
 
@@ -103,7 +104,7 @@ func newCmdTap() *cobra.Command {
 				return fmt.Errorf("output format \"%s\" not recognized", options.output)
 			}
 
-			return requestTapByResourceFromAPI(os.Stdout, validatedPublicAPIClient(false), req, wide)
+			return requestTapByResourceFromAPI(os.Stdout, validatedPublicAPIClient(time.Time{}), req, wide)
 		},
 	}
 

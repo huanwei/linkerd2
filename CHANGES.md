@@ -1,3 +1,182 @@
+## edge-18.11.3
+
+* CLI
+  * **New** `linkerd routes` command displays per-route stats for services with
+    service profiles
+  * **Experimental** Add `--ha` flag to `linkerd install` command, for HA
+    deployment of the control plane (thanks @benjdlambert!)
+* Web UI
+  * **Experimental** Top Routes page, served at `/routes`
+* Controller
+  * **Fixed** Fix auto injection issue on Kubernetes `v1.9.11` that would
+    merge, rather than append, the proxy container into the application
+* Proxy
+  * **Improved** Add controller client metrics, scoped under `control_`
+  * **Improved** Canonicalize outbound names via DNS for inbound profiles
+
+## edge-18.11.2
+
+* CLI
+  * **Improved** Update stat command to accept multiple stat targets
+  * **Fixed** Fix authority stat filtering when the `--from` flag is present
+  * Various improvements to check command, including:
+    * Emit warnings instead of errors when not running the latest version
+    * Add retries if control plane health check fails initially
+    * Run all pre-install RBAC checks, instead of stopping at first failure
+* Proxy / Proxy-Init
+  * **Fixed** Fix routing issue when a pod makes a request to itself (#1585)
+  * Only include `classification` label on `response_total` metric
+
+## edge-18.11.1
+
+* Proxy
+  * **Fixed** Remove panic when failing to get remote address
+  * **Improved** Better logging in TCP connect error messages
+* Web UI
+  * **Improved** Fixed a smattering of small UI issues
+
+## edge-18.10.4
+
+This release includes a major redesign of the web frontend to make use of the
+Material design system. Additional features that leverage the new design are
+coming soon! This release also includes the following changes:
+
+* CLI
+  * **Fixed** Fixed an issue with the `--registry` install flag not accepting
+    hosts with ports (thanks, @alenkacz!)
+* Web UI
+  * **New** Added a new Grafana dashboard for authorities (thanks, @alpeb!)
+  * **New** Revamped look and feel of the Linkerd dashboard by switching
+    component libraries from antd to material-ui
+
+## edge-18.10.3
+
+* CLI
+  * **New** Added an `--output` stat flag, for printing stats as JSON
+  * **Improved** Updated the `top` table to set column widths dynamically
+  * **Experimental** Added a `--single-namespace` install flag for installing
+    the control plane with Role permissions instead of ClusterRole permissions
+* Controller
+  * Fixed a few issues with auto injection via the proxy-injector webhook:
+    * Injected pods now execute the linkerd-init container last, to avoid
+      rerouting requests during pod init
+    * Original pod labels and annotations are preserved when auto-injecting
+* Web UI
+  * **New** Added a Help section in the sidebar containing useful links
+
+## edge-18.10.2
+
+This release brings major improvements to the CLI as described below, including
+support for auto-injecting deployments via a Kubernetes Admission Controller.
+Proxy auto-injection is **experimental**, and the implementation may change
+going forward.
+
+* CLI
+  * **New** Added a `--proxy-auto-inject` flag to the `install` command,
+    allowing for auto-injection of sidecar containers (Thanks @ihcsim!)
+  * **Improved** Added `--proxy-cpu` and `--proxy-memory` flags to the `install`
+    and `inject` commands, giving the ability to configure CPU + Memory requests
+    (Thanks @benjdlambert!)
+  * **Improved** Added a `--context` flag to specify the context to use to talk
+    to the Kubernetes apiserver (Thanks @ffd2subroutine!)
+
+## edge-18.10.1
+
+* Web UI
+  * **Improved** Tap and Top pages
+    * Added clear button to query form
+  * **Improved** Resource Detail pages
+    * Limit number of resources shown in the graph
+* Controller
+  * CLI health check now uses unified endpoint for data plane checks
+  * Include Licence files in all Docker images
+
+Special thanks to @alenkacz for contributing to this release!
+
+## edge-18.9.3
+
+* Web UI
+  * **Improved** Resource Detail page
+    * Better rendering of the dependency graph at the top of the page
+    * Unmeshed sources are now populated in the Inbound traffic table
+    * Sources and destinations are aligned in the popover
+  * **Improved** Tap and Top pages
+    * Additional validation and polish for the form controls
+    * The top table clears older results when a new top call is started
+    * The top table now aggregates by HTTP method as well
+* CLI
+  * **New** The namespace in which Linkerd is installed is configurable via the
+    `LINKERD_NAMESPACE` env var, in addition to the `--linkerd-namespace` flag
+  * **New** The wait time for the `check` and `dashboard` commands is
+    configurable via the `--wait` flag
+  * **Improved** The `top` command now aggregates by HTTP method as well
+
+Special thanks to @rochacon, @fahrradflucht and @alenkacz for contributing to
+this release!
+
+## stable-2.0.0
+
+## edge-18.9.2
+
+* **New** _edge_ and _stable_ release channels
+* Web UI
+  * **Improved** Tap & Top UIs with better layout and linking
+* CLI
+  * **Improved** `check --pre` command verifies the caller has sufficient
+    permissions to install Linkerd
+  * **Improved** `check` command verifies that Prometheus has data for proxied
+    pods
+* Proxy
+  * **Fix** `hyper` crate dependency corrects HTTP/1.0 Keep-Alive behavior
+
+## v18.9.1
+
+* Web UI
+  * **New** Default landing page provides namespace overview with expandable
+    sections
+  * **New** Breadcrumb navigation at the top of the dashboard
+  * **Improved** Tap and Top pages
+    * Table rendering performance improvements via throttling
+    * Tables now link to resource detail pages
+    * Tap an entire namespace when no resource is specified
+    * Tap websocket errors provide more descriptive text
+    * Consolidated source and destination columns
+  * Misc ui updates
+    * Metrics tables now include a small success rate chart
+    * Improved latency formatting for seconds latencies
+    * Renamed upstream/downstream to inbound/outbound
+    * Sidebar scrolls independently from main panel, scrollbars hidden when not
+      needed
+    * Removed social links from sidebar
+* CLI
+  * **New** `linkerd check` now validates Linkerd proxy versions and readiness
+  * **New** `linkerd inject` now provides an injection status report, and warns
+    when resources are not injectable
+  * **New** `linkerd top` now has a `--hide-sources` flag, to hide the source
+    column and collapse top results accordingly
+* Control Plane
+  * Updated Prometheus to v2.4.0, Grafana to 5.2.4
+
+## v18.8.4
+
+* Web UI
+  * **Improved** Tap and Top now have a better sampling rate
+  * **Fixed** Missing sidebar headings now appear
+
+## v18.8.3
+
+* Web UI
+  * **Improved** Kubernetes resource navigation in the sidebar
+  * **Improved** resource detail pages:
+    * **New** live request view
+    * **New** success rate graphs
+* CLI
+  * `tap` and `top` have been improved to sample up to 100 RPS
+* Control plane
+  * Injected proxy containers now have readiness and liveness probes enabled
+
+Special thanks to @sourishkrout for contributing a web readibility fix!
+
 ## v18.8.2
 
 * CLI

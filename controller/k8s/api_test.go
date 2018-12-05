@@ -30,7 +30,7 @@ func newAPI(resourceConfigs []string, extraConfigs ...string) (*API, []runtime.O
 		k8sConfigs = append(k8sConfigs, config)
 	}
 
-	api, err := NewFakeAPI(k8sConfigs...)
+	api, err := NewFakeAPI("", k8sConfigs...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("NewFakeAPI returned an error: %s", err)
 	}
@@ -132,6 +132,19 @@ metadata:
   namespace: not-my-ns`,
 				},
 			},
+			getObjectsExpected{
+				err:       nil,
+				namespace: "",
+				resType:   k8s.Namespace,
+				name:      "",
+				k8sResResults: []string{`
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-ns`,
+				},
+				k8sResMisc: []string{},
+			},
 		}
 
 		for _, exp := range expectations {
@@ -153,6 +166,41 @@ metadata:
 				}
 			}
 		}
+	})
+
+	t.Run("In single-namespace mode", func(t *testing.T) {
+		t.Run("Returns only the configured namespace", func(t *testing.T) {
+
+			ns1 := `
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: namespace1`
+
+			ns2 := `
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: namespace2`
+
+			api, err := NewFakeAPI("namespace1", ns1, ns2)
+			if err != nil {
+				t.Fatalf("NewFakeAPI returned an error: %s", err)
+			}
+
+			namespaces, err := api.GetObjects("", k8s.Namespace, "")
+			if err != nil {
+				t.Fatalf("unexpected error: %s", err)
+			}
+
+			if len(namespaces) != 1 {
+				t.Fatalf("expected 1 namespace, got %d", len(namespaces))
+			}
+
+			if namespaces[0].(*apiv1.Namespace).Name != "namespace1" {
+				t.Fatalf("expected namespace1, got %v", namespaces[0])
+			}
+		})
 	})
 
 	t.Run("If objects are pods", func(t *testing.T) {
